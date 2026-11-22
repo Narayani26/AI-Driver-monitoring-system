@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driver Monitoring System</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">◉</span> Driver Monitoring System <span class="sub">drowsiness · distraction · emotion</span></div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="live">Live monitor</button>
+    <button class="tab" data-tab="about">How it works</button>
+  </nav>
+  <div id="conn" class="pill pill-off">connecting…</div>
+</header>
+
+<main>
+<!-- ============================== LIVE ============================== -->
+<section id="tab-live" class="tabpane active">
+  <div class="controls">
+    <div class="seg" id="source-seg">
+      <button data-src="webcam" class="active">📷 Webcam</button>
+      <button data-src="file">🎞️ Video file</button>
+      <button data-src="stream">📡 Dash cam / IP stream</button>
+    </div>
+    <input type="file" id="file-input" accept="video/*" hidden>
+    <input type="text" id="stream-url" class="hidden" placeholder="rtsp://192.168.1.254/live  or  http://phone-ip:8080/video">
+    <button id="start" class="btn primary">Start</button>
+    <button id="recal" class="btn" title="Look straight at the road for a few seconds">Recalibrate</button>
+    <span class="spacer"></span>
+    <label class="toggle"><input type="checkbox" id="opt-voice" checked> Voice</label>
+    <label class="toggle"><input type="checkbox" id="opt-sound" checked> Buzzer</label>
+    <label class="toggle"><input type="checkbox" id="opt-objects" checked> Phone/object detection</label>
+    <button id="report-btn" class="btn">Trip report</button>
+  </div>
+
+  <div class="layout">
+    <div class="panes">
+      <div class="pane">
+        <div class="pane-head"><span>Live footage</span><span id="src-label" class="muted">webcam</span></div>
+        <div class="stage">
+          <video id="video" playsinline muted></video>
+          <canvas id="raw-canvas" class="hidden"></canvas>
+          <div id="placeholder" class="placeholder">Choose a source and press <b>Start</b></div>
+        </div>
+      </div>
+      <div class="pane">
+        <div class="pane-head"><span>AI detection</span><span id="perf" class="muted">–</span></div>
+        <div class="stage" id="ai-stage">
+          <canvas id="ai-canvas"></canvas>
+          <div id="calib" class="calib hidden">
+            <div>Calibrating — look straight ahead at the road</div>
+            <div class="bar"><div id="calib-bar"></div></div>
+          </div>
+          <div id="toast" class="toast hidden"><div class="toast-title"></div><div class="toast-sub"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="card risk-card">
+        <div class="gauge" id="gauge"><div class="gauge-inner"><div id="risk-num">–</div><div id="risk-level">idle</div></div></div>
+        <div class="bars">
+          <div class="barrow"><span>Drowsiness</span><div class="hbar"><div id="b-drowsy"></div></div><b id="v-drowsy">–</b></div>
+          <div class="barrow"><span>Distraction</span><div class="hbar"><div id="b-distract"></div></div><b id="v-distract">–</b></div>
+          <div class="barrow"><span>Stress / affect</span><div class="hbar"><div id="b-affect"></div></div><b id="v-affect">–</b></div>
+        </div>
+        <ul id="reasons" class="reasons"></ul>
+      </div>
+      <div class="grid">
+        <div class="card stat"><div class="k">Eyes</div><div class="v" id="s-eyes">–</div><div class="s" id="s-eyes-sub"></div></div>
+        <div class="card stat"><div class="k">PERCLOS (60 s)</div><div class="v" id="s-perclos">–</div><div class="s">eyes ≥80% closed</div></div>
+        <div class="card stat"><div class="k">Blinks / min</div><div class="v" id="s-blinks">–</div><div class="s">normal ≈ 10–20</div></div>
+        <div class="card stat"><div class="k">Yawns (5 min)</div><div class="v" id="s-yawns">–</div><div class="s" id="s-mouth"></div></div>
+        <div class="card stat"><div class="k">Attention</div><div class="v" id="s-attn">–</div><div class="s" id="s-pose"></div></div>
+        <div class="card stat"><div class="k">Behaviour</div><div class="v" id="s-beh">–</div><div class="s" id="s-beh-sub"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-head">Emotion <span class="muted" id="emo-top"></span></div>
+        <div id="emo-bars" class="emo"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="bottom">
+    <div class="card chart-card">
+      <div class="card-head">Real-time timeline <span class="muted">last 60 s</span>
+        <span class="legend"><i class="l-risk"></i>risk <i class="l-d"></i>drowsiness <i class="l-x"></i>distraction <i class="l-a"></i>affect</span></div>
+      <canvas id="chart"></canvas>
+    </div>
+    <div class="card alerts-card">
+      <div class="card-head">Alerts & suggestions <span class="muted" id="alert-count"></span></div>
+      <ul id="alerts" class="alerts"><li class="empty">No alerts yet</li></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== ABOUT ============================== -->
+<section id="tab-about" class="tabpane">
+  <div class="about">
+    <h2>How the system works</h2>
+    <div class="flow">
+      <div class="node">Camera<br><small>webcam · video · dash cam</small></div><div class="arrow">→</div>
+      <div class="node">Face landmarks<br><small>MediaPipe · 478 pts · head pose</small></div><div class="arrow">→</div>
+      <div class="node">Indicators<br><small>EAR · PERCLOS · blinks · yawns · gaze</small></div><div class="arrow">→</div>
+      <div class="node">Deep models<br><small>temporal transformer · emotion CNN · YOLO</small></div><div class="arrow">→</div>
+      <div class="node hl">Risk fusion<br><small>0–100 index · alerts · report</small></div>
+    </div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>Models in use right now</h3>
+        <table id="models-table"></table>
+      </div>
+      <div class="card">
+        <h3>Results (subject-independent)</h3>
+        <table id="metrics-table"><tr><td class="muted">No trained runs found in <code>runs/</code> yet.</td></tr></table>
+        <p class="muted small">All splits keep each person entirely in train <i>or</i> test, so scores reflect performance on drivers the model has never seen.</p>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>What each part detects</h3>
+        <ul class="list">
+          <li><b>Drowsiness</b> — eye-closure (EAR, PERCLOS P80), blink duration, microsleeps ≥ 1 s, yawns ≥ 1.5 s, and a Conv-Transformer over 30 s of features (alert / low-vigilant / drowsy).</li>
+          <li><b>Distraction</b> — head pose + gaze: eyes off road ≥ 3 s, and repeated glances totalling ≥ 10 s in 30 s (Euro NCAP 2026 definitions). YOLO detects phone use, drinking, smoking.</li>
+          <li><b>Emotion</b> — facial-expression CNN (7 classes). Anger/fear raise the risk of other hazards and trigger a "stress" suggestion when sustained.</li>
+          <li><b>Per-driver calibration</b> — the first seconds learn <i>your</i> open-eye shape and neutral head pose, so thresholds adapt to each driver and camera position.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Datasets</h3>
+        <table class="data">
+          <tr><th>Task</th><th>Datasets</th></tr>
+          <tr><td>Eye state</td><td>MRL Eye (84,898 NIR images, 37 people)</td></tr>
+          <tr><td>Yawning</td><td>YawDD, Yawn-Eye</td></tr>
+          <tr><td>Drowsiness over time</td><td>UTA-RLDD (60 people, 30 h), NTHU-DDD</td></tr>
+          <tr><td>Emotion</td><td>AffectNet / RAF-DB / FER2013 → tested on KMU-FED (in-car)</td></tr>
+          <tr><td>Unsafe behaviour</td><td>State Farm, 100-Driver, Roboflow phone/cigarette/seatbelt sets</td></tr>
+          <tr><td>Cross-dataset test</td><td>DMD (37 drivers, 41 h)</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>What we do differently</h3>
+        <ol class="list">
+          <li>One system for drowsiness, distraction <i>and</i> emotion, fused into one explainable risk score — every alert says <i>why</i>.</li>
+          <li>Alert rules follow the Euro NCAP 2026 driver-engagement definitions.</li>
+          <li>Per-driver calibration used both live and during training.</li>
+          <li>Tiny temporal model (≈174k params, &lt;1 ms on CPU) that needs no stored face images — privacy-friendly.</li>
+          <li>Honest evaluation: people in the test set are never seen in training; cross-dataset tests; latency reported.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>Product vision: dash cam → phone</h3>
+        <ul class="list">
+          <li>Driver-facing (IR) dash cam streams over its own Wi-Fi — no internet needed.</li>
+          <li>Phone app (Android foreground service) runs the same models on-device while the screen is locked.</li>
+          <li>Voice + buzzer + vibration alerts with suggestions; trip report synced when back online.</li>
+          <li>Try it here: choose <b>Dash cam / IP stream</b> and enter the camera's RTSP URL.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- ============================== REPORT ============================== -->
+<div id="report" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><h2>Trip report</h2><button class="btn" id="report-close">✕</button></div>
+    <div id="report-body"></div>
+    <canvas id="report-chart"></canvas>
+    <div class="modal-foot">
+      <button class="btn" id="dl-json">Download JSON</button>
+      <button class="btn" id="dl-csv">Download timeline CSV</button>
+      <button class="btn" onclick="window.print()">Print / save PDF</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

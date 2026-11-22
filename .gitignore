@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+/runs/
+/data/
+/manifests/
+/features/
+*.onnx
+*.pt
+*.mp4
+*.jsonl
+weights/*.task
+weights/*.onnx
+weights/*.pt
+.pytest_cache/

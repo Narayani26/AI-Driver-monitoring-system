@@ -1,0 +1,390 @@
+"use strict";
+// ---------------------------------------------------------------- state
+const $ = (id) => document.getElementById(id);
+const S = {
+  ws: null, ready: false, src: "webcam", running: false, inflight: false,
+  t0: 0, lastT: -1, stream: null, fileURL: null, streamFrame: null,
+  hist: [], alerts: [], audio: null, speakingSev: -1, lastLevel: "OK", report: null,
+};
+const SEV = { info: 0, caution: 1, warning: 2, critical: 3 };
+const LVL_COLOR = { OK: "#3fb950", CAUTION: "#e3b341", WARNING: "#f0883e", CRITICAL: "#f85149" };
+const EMO = ["neutral", "happy", "sad", "surprise", "fear", "disgust", "anger"];
+const video = $("video"), ai = $("ai-canvas"), rawCanvas = $("raw-canvas");
+const sendCanvas = document.createElement("canvas");
+
+// ---------------------------------------------------------------- socket
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  S.ws = ws;
+  setConn("loading models…", false);
+  ws.onmessage = async (ev) => {
+    if (ev.data instanceof ArrayBuffer) { // stream mode: raw frame precedes its result
+      S.streamFrame = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" }));
+      rawCanvas.width = S.streamFrame.width; rawCanvas.height = S.streamFrame.height;
+      rawCanvas.getContext("2d").drawImage(S.streamFrame, 0, 0);
+      return;
+    }
+    const m = JSON.parse(ev.data);
+    if (m.type === "ready") { S.ready = true; setConn("connected", true); fillModels(m.models); }
+    else if (m.type === "result") onResult(m);
+    else if (m.type === "report") showReport(m);
+    else if (m.type === "stream_ended") { if (S.running && S.src === "stream") stop(true); }
+    else if (m.type === "error") { alert(m.message); if (S.src === "stream") stop(false); }
+  };
+  ws.onclose = () => { S.ready = false; S.inflight = false; setConn("disconnected – retrying", false); setTimeout(connect, 1500); };
+}
+function setConn(text, on) { const c = $("conn"); c.textContent = text; c.className = "pill " + (on ? "pill-on" : "pill-off"); }
+function send(obj) { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(obj)); }
+
+// ---------------------------------------------------------------- capture loop (webcam / file)
+function startLoop() { if (!S.looping) { S.looping = true; captureLoop(); } }
+function captureLoop() {
+  if (!S.running || S.src === "stream") { S.looping = false; return; }
+  requestAnimationFrame(captureLoop);
+  if (S.inflight || !S.ready || video.readyState < 2 || video.videoWidth === 0) return;
+  if (S.src === "file" && (video.paused || video.ended)) return;
+  const t = S.src === "file" ? video.currentTime : (performance.now() - S.t0) / 1000;
+  if (S.src === "file" && t < S.lastT - 0.5) { send({ type: "reset", keep_profile: true }); S.hist = []; S.lastT = -1; } // seeked back
+  if (t <= S.lastT) return; // same video frame as last time
+  S.lastT = t;
+  const w = Math.min(640, video.videoWidth), h = Math.round(video.videoHeight * w / video.videoWidth);
+  sendCanvas.width = w; sendCanvas.height = h;
+  sendCanvas.getContext("2d").drawImage(video, 0, 0, w, h);
+  S.inflight = true;
+  sendCanvas.toBlob(async (blob) => {
+    const jpg = new Uint8Array(await blob.arrayBuffer());
+    const buf = new Uint8Array(8 + jpg.length);
+    new DataView(buf.buffer).setFloat64(0, t, true);
+    buf.set(jpg, 8);
+    if (S.ws.readyState === 1) S.ws.send(buf); else S.inflight = false;
+  }, "image/jpeg", 0.8);
+}
+
+// ---------------------------------------------------------------- results
+function onResult(r) {
+  S.inflight = false;
+  const img = S.src === "stream" ? S.streamFrame : sendCanvas;
+  if (img) drawOverlay(img, r);
+  $("perf").textContent = `${r.proc_ms.toFixed(0)} ms/frame · ${r.fps ? r.fps.toFixed(0) : "–"} FPS`;
+
+  const cal = $("calib");
+  if (r.calibrating != null) { cal.classList.remove("hidden"); $("calib-bar").style.width = (r.calibrating * 100).toFixed(0) + "%"; }
+  else cal.classList.add("hidden");
+
+  updateStats(r);
+  if (r.risk) {
+    S.hist.push({ t: r.t, risk: r.risk.index, d: r.risk.drowsiness * 100, x: r.risk.distraction * 100, a: r.risk.affect * 100 });
+    while (S.hist.length && r.t - S.hist[0].t > 60) S.hist.shift();
+    drawChart($("chart"), S.hist, 60);
+  }
+  for (const a of r.alerts || []) onAlert(a);
+}
+
+function drawOverlay(img, r) {
+  ai.width = r.w; ai.height = r.h;
+  const g = ai.getContext("2d");
+  g.drawImage(img, 0, 0, r.w, r.h);
+  const lvl = r.risk ? r.risk.level : "OK", col = LVL_COLOR[lvl];
+  const lw = Math.max(2, r.w / 320);
+  if (r.face_box) {
+    const [x0, y0, x1, y1] = r.face_box;
+    g.strokeStyle = col; g.lineWidth = lw; g.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  if (r.eyes) {
+    const closed = r.eye_openness != null && r.eye_openness < 0.2;
+    g.strokeStyle = closed ? "#f85149" : "#3fb950"; g.lineWidth = lw;
+    for (const eye of r.eyes) poly(g, eye);
+  }
+  if (r.mouth) { g.strokeStyle = "rgba(88,166,255,.8)"; g.lineWidth = lw * 0.7; poly(g, r.mouth); }
+  for (const d of r.detections || []) {
+    const [x0, y0, x1, y1] = d.box;
+    g.setLineDash(d.active ? [] : [6, 4]);
+    g.strokeStyle = d.active ? "#f85149" : "#8b98a9"; g.lineWidth = lw;
+    g.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    g.setLineDash([]);
+    label(g, `${d.label} ${(d.conf * 100).toFixed(0)}%${d.active ? "" : " (ignored)"}`, x0, Math.max(y0 - 4, 14), d.active ? "#f85149" : "#8b98a9", r.w);
+  }
+  // banner
+  const fs = Math.max(13, r.w / 34);
+  g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(0, 0, r.w, fs * 1.7);
+  g.fillStyle = col; g.fillRect(0, 0, 6, fs * 1.7);
+  g.font = `700 ${fs}px system-ui, sans-serif`; g.fillStyle = col;
+  const head = r.calibrating != null ? "CALIBRATING" : (r.risk ? `${lvl} · risk ${r.risk.index.toFixed(0)}` : "");
+  g.fillText(head, 14, fs * 1.2);
+  g.font = `${fs * 0.75}px system-ui, sans-serif`; g.fillStyle = "#e6edf3";
+  const right = r.face ? (r.emotion ? `${r.emotion} ${(r.emotion_conf * 100).toFixed(0)}%` : "") : "no face";
+  g.fillText(right, r.w - g.measureText(right).width - 10, fs * 1.15);
+  // live timers
+  const timers = [];
+  if (r.eye_closed_s > 0.3) timers.push(`eyes closed ${r.eye_closed_s.toFixed(1)}s`);
+  if (r.off_road_s > 0.5) timers.push(`looking away ${r.off_road_s.toFixed(1)}s`);
+  timers.forEach((s, i) => label(g, s, 10, r.h - 12 - i * fs * 1.2, "#f0883e", r.w));
+  $("ai-stage").className = "stage lvl-" + lvl;
+}
+function poly(g, pts) { g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); g.stroke(); }
+function label(g, text, x, y, color, W) {
+  const fs = Math.max(12, W / 45); g.font = `600 ${fs}px system-ui, sans-serif`;
+  const w = g.measureText(text).width;
+  g.fillStyle = "rgba(0,0,0,.65)"; g.fillRect(x - 3, y - fs, w + 6, fs * 1.3);
+  g.fillStyle = color; g.fillText(text, x, y);
+}
+
+function setText(id, text, cls) { const el = $(id); el.textContent = text; if (cls !== undefined) el.className = el.className.split(" ")[0] + " " + cls; }
+function updateStats(r) {
+  const rk = r.risk;
+  if (rk) {
+    const col = LVL_COLOR[rk.level];
+    $("gauge").style.background = `conic-gradient(${col} ${rk.index * 3.6}deg, var(--panel2) 0deg)`;
+    $("risk-num").textContent = rk.index.toFixed(0);
+    $("risk-level").textContent = rk.level; $("risk-level").style.color = col;
+    for (const [k, v] of [["drowsy", rk.drowsiness], ["distract", rk.distraction], ["affect", rk.affect]]) {
+      $("b-" + k).style.width = (v * 100).toFixed(0) + "%"; $("v-" + k).textContent = (v * 100).toFixed(0);
+    }
+    $("reasons").innerHTML = rk.reasons.map((x) => `<li>${esc(x)}</li>`).join("");
+  } else if (r.calibrating != null) {
+    $("risk-num").textContent = "…"; $("risk-level").textContent = "CALIBRATING";
+  }
+  const f = r.features;
+  if (!r.face) { setText("s-eyes", "no face", "v warn"); $("s-eyes-sub").textContent = ""; }
+  else if (r.eye_openness != null) {
+    const closed = r.eye_openness < 0.2;
+    setText("s-eyes", closed ? "CLOSED" : "open", closed ? "v bad" : "v good");
+    $("s-eyes-sub").textContent = `openness ${(r.eye_openness * 100).toFixed(0)}% · EAR ${f.ear?.toFixed(3)}`;
+  } else { setText("s-eyes", "…", "v"); $("s-eyes-sub").textContent = f.ear != null ? `EAR ${f.ear.toFixed(3)}` : ""; }
+  const pc = (r.perclos || 0) * 100;
+  setText("s-perclos", pc.toFixed(1) + "%", pc >= 15 ? "v bad" : pc >= 8 ? "v warn" : "v good");
+  setText("s-blinks", r.blink_rate != null ? r.blink_rate.toFixed(0) : "–", "v");
+  setText("s-yawns", String(r.yawns ?? 0), r.yawns >= 3 ? "v bad" : r.yawns >= 1 ? "v warn" : "v good");
+  $("s-mouth").textContent = f.jaw_open_bs != null ? `jaw open ${(f.jaw_open_bs * 100).toFixed(0)}%` : (f.mar != null ? `MAR ${f.mar.toFixed(2)}` : "");
+  if (r.calibrating != null) setText("s-attn", "…", "v");
+  else setText("s-attn", r.off_road ? `away ${r.off_road_s.toFixed(1)}s` : "on road", r.off_road ? (r.off_road_s > 2 ? "v bad" : "v warn") : "v good");
+  $("s-pose").textContent = f.yaw != null ? `yaw ${f.yaw.toFixed(0)}° · pitch ${f.pitch.toFixed(0)}°` : "";
+  const beh = Object.entries(r.behaviours || {}).filter(([, v]) => v >= 0.5);
+  setText("s-beh", beh.length ? beh.map(([k]) => k.replace("_", " ")).join(", ") : "safe", beh.length ? "v bad" : "v good");
+  $("s-beh-sub").textContent = r.alertness ? `temporal model: ${r.alertness.replace("_", " ")}` : `${(r.detections || []).length} object(s) seen`;
+  // emotion bars
+  const p = r.emotion_probs;
+  $("emo-top").textContent = p ? `${r.emotion} (${(r.emotion_conf * 100).toFixed(0)}%)` : (r.face ? "model not loaded" : "no face");
+  $("emo-bars").innerHTML = EMO.map((e) => {
+    const v = p ? p[e] : 0;
+    return `<div class="row ${p && e === r.emotion ? "top" : ""}"><span>${e}</span><div class="hbar"><div style="width:${(v * 100).toFixed(0)}%"></div></div><b>${(v * 100).toFixed(0)}%</b></div>`;
+  }).join("");
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// ---------------------------------------------------------------- alerts: feed, toast, sound, voice
+function onAlert(a) {
+  S.alerts.unshift(a);
+  const ul = $("alerts");
+  if (ul.querySelector(".empty")) ul.innerHTML = "";
+  const li = document.createElement("li");
+  li.className = a.severity;
+  li.innerHTML = `<span class="t">${fmtTime(a.t)}</span><div class="m">${esc(a.message)}${a.detail ? ` <span class="muted">(${esc(a.detail)})</span>` : ""}</div><div class="g">💡 ${esc(a.suggestion)}</div>`;
+  ul.prepend(li);
+  while (ul.children.length > 50) ul.lastChild.remove();
+  $("alert-count").textContent = `${S.alerts.length} total`;
+  if (SEV[a.severity] >= 1) toast(a);
+  if ($("opt-sound").checked) playSound(a.sound);
+  if ($("opt-voice").checked) speak(a);
+}
+let toastTimer = null;
+function toast(a) {
+  const t = $("toast");
+  t.className = "toast " + a.severity;
+  t.querySelector(".toast-title").textContent = a.message;
+  t.querySelector(".toast-sub").textContent = a.suggestion;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), a.severity === "critical" ? 6000 : 4500);
+}
+function ensureAudio() {
+  if (!S.audio) { try { S.audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { S.audio = null; } }
+  if (S.audio && S.audio.state === "suspended") S.audio.resume();
+}
+function tone(freq, start, dur, type = "sine", vol = 0.25) {
+  const ctx = S.audio; if (!ctx) return;
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0, ctx.currentTime + start);
+  g.gain.linearRampToValueAtTime(vol, ctx.currentTime + start + 0.01);
+  g.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+  o.connect(g).connect(ctx.destination); o.start(ctx.currentTime + start); o.stop(ctx.currentTime + start + dur + 0.02);
+}
+function playSound(kind) {
+  ensureAudio();
+  if (kind === "alarm") for (let i = 0; i < 6; i++) tone(i % 2 ? 660 : 990, i * 0.18, 0.16, "square", 0.22);
+  else if (kind === "chime") { tone(660, 0, 0.18); tone(880, 0.2, 0.25); }
+  else if (kind === "soft") tone(520, 0, 0.2, "sine", 0.15);
+}
+function speak(a) {
+  if (!("speechSynthesis" in window)) return;
+  const sev = SEV[a.severity];
+  if (speechSynthesis.speaking && sev <= S.speakingSev) return; // don't interrupt something more important
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(sev >= 2 ? `${a.message} ${a.suggestion}` : a.message);
+  u.rate = 1.02; u.lang = "en-US";
+  u.onend = () => (S.speakingSev = -1);
+  S.speakingSev = sev;
+  speechSynthesis.speak(u);
+}
+function fmtTime(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, "0")}`; }
+
+// ---------------------------------------------------------------- chart
+function drawChart(cv, hist, windowS) {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (!W) return;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr);
+  const pad = { l: 30, r: 8, t: 8, b: 18 }, w = W - pad.l - pad.r, h = H - pad.t - pad.b;
+  const tMax = hist.length ? hist[hist.length - 1].t : 0, tMin = windowS ? tMax - windowS : (hist.length ? hist[0].t : 0);
+  const X = (t) => pad.l + ((t - tMin) / Math.max(tMax - tMin, 1e-6)) * w, Y = (v) => pad.t + h - (v / 100) * h;
+  // level bands
+  [[30, 55, "rgba(227,179,65,.06)"], [55, 80, "rgba(240,136,62,.08)"], [80, 100, "rgba(248,81,73,.10)"]].forEach(([a, b, c]) => { g.fillStyle = c; g.fillRect(pad.l, Y(b), w, Y(a) - Y(b)); });
+  g.strokeStyle = "#243042"; g.lineWidth = 1; g.fillStyle = "#8b98a9"; g.font = "10px system-ui";
+  for (const v of [0, 30, 55, 80, 100]) { g.beginPath(); g.moveTo(pad.l, Y(v)); g.lineTo(W - pad.r, Y(v)); g.stroke(); g.fillText(v, 4, Y(v) + 3); }
+  const span = tMax - tMin, step = span > 600 ? 120 : span > 120 ? 30 : 10;
+  for (let t = Math.max(0, Math.ceil(tMin / step) * step); t <= tMax; t += step) g.fillText(fmtTime(Math.max(t, 0)), X(t) - 10, H - 4);
+  const css = getComputedStyle(document.documentElement);
+  for (const [k, c, lw] of [["d", "--c-d", 1.5], ["x", "--c-x", 1.5], ["a", "--c-a", 1.5], ["risk", "--c-risk", 2.2]]) {
+    g.strokeStyle = css.getPropertyValue(c).trim(); g.lineWidth = lw; g.beginPath();
+    hist.forEach((p, i) => (i ? g.lineTo(X(p.t), Y(p[k])) : g.moveTo(X(p.t), Y(p[k]))));
+    g.stroke();
+  }
+}
+
+// ---------------------------------------------------------------- report
+function showReport(m) {
+  S.report = m;
+  const s = m.summary;
+  const kpi = (k, v, sub = "") => `<div class="card stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`;
+  const lv = s.time_in_level_pct;
+  const kinds = Object.entries(s.alerts_by_kind).map(([k, v]) => `<tr><td>${k.replace(/_/g, " ")}</td><td>${v}</td></tr>`).join("") || `<tr><td class="muted">none</td><td></td></tr>`;
+  const emos = Object.entries(s.emotion_time_pct).map(([k, v]) => `${k} ${v}%`).join(" · ") || "–";
+  const scoreCls = s.safety_score >= 80 ? "good" : s.safety_score >= 60 ? "warn" : "bad";
+  $("report-body").innerHTML = `
+    <p class="muted">Session started ${s.started} · ${fmtTime(s.duration_s)} analysed · face visible ${s.face_visible_pct}% of frames</p>
+    <div class="kpis">
+      ${kpi("Safety score", `<span class="${scoreCls}">${s.safety_score}</span>`, "100 − average risk")}
+      ${kpi("Alerts", s.alerts_total)}
+      ${kpi("Peak risk", s.max_risk)}
+      ${kpi("Peak PERCLOS", s.max_perclos_pct + "%")}
+      ${kpi("Longest eye closure", s.longest_eye_closure_s + " s")}
+      ${kpi("Longest look away", s.longest_eyes_off_road_s + " s")}
+      ${kpi("Yawns", s.yawns)}
+      ${kpi("Blinks / min", s.mean_blink_rate)}
+    </div>
+    <div class="muted small">Time in each risk level</div>
+    <div class="levelbar">${Object.entries(lv).map(([k, v]) => `<div title="${k} ${v}%" style="width:${v}%;background:${LVL_COLOR[k]}"></div>`).join("")}</div>
+    <div class="small">${Object.entries(lv).map(([k, v]) => `<span style="color:${LVL_COLOR[k]}">■</span> ${k} ${v}%`).join(" &nbsp; ")}</div>
+    <div class="cols" style="margin-top:14px">
+      <div><h3>Alerts by type</h3><table>${kinds}</table></div>
+      <div><h3>Emotions</h3><p>${emos}</p><h3>Unsafe behaviour</h3><p>${Object.entries(s.behaviour_time_s).map(([k, v]) => `${k}: ${v}s`).join(" · ") || "none detected"}</p></div>
+    </div>
+    <h3>Risk over the whole session</h3>`;
+  $("report").classList.remove("hidden");
+  const hist = m.timeline.map((p) => ({ t: p.t, risk: p.risk, d: p.drowsiness * 100, x: p.distraction * 100, a: p.affect * 100 }));
+  requestAnimationFrame(() => drawChart($("report-chart"), hist, 0));
+}
+function download(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ---------------------------------------------------------------- start / stop
+async function start() {
+  if (!S.ready) return alert("Still loading models – try again in a moment.");
+  ensureAudio();
+  S.hist = []; S.lastT = -1; S.inflight = false;
+  $("placeholder").classList.add("hidden");
+  if (S.src === "webcam") {
+    try { S.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }); }
+    catch (e) { return alert("Camera not available: " + e.message + (location.protocol === "http:" && location.hostname !== "localhost" ? "\n(Browsers only allow the camera on https or localhost.)" : "")); }
+    video.srcObject = S.stream; video.classList.remove("hidden"); rawCanvas.classList.add("hidden");
+    await video.play();
+    S.t0 = performance.now();
+    send({ type: "recalibrate" });
+  } else if (S.src === "file") {
+    if (!S.fileURL) { $("file-input").click(); return; }
+    video.srcObject = null; video.src = S.fileURL; video.classList.remove("hidden"); rawCanvas.classList.add("hidden");
+    video.controls = true; video.currentTime = 0;
+    send({ type: "recalibrate" });
+    S.running = true;
+    await video.play();
+  } else {
+    const url = $("stream-url").value.trim();
+    if (!url) return alert("Enter the camera stream URL (RTSP / HTTP MJPEG).");
+    video.classList.add("hidden"); rawCanvas.classList.remove("hidden");
+    send({ type: "stream_start", url });
+  }
+  S.running = true;
+  $("start").textContent = "Stop"; $("start").className = "btn danger";
+  startLoop();
+}
+function stop(showRep) {
+  S.running = false;
+  if (S.stream) { S.stream.getTracks().forEach((t) => t.stop()); S.stream = null; }
+  if (S.src === "file") video.pause();
+  if (S.src === "stream") send({ type: "stream_stop" });
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  $("start").textContent = "Start"; $("start").className = "btn primary";
+  if (showRep) send({ type: "report" });
+}
+
+// ---------------------------------------------------------------- wiring
+$("start").onclick = () => (S.running ? stop(true) : start());
+$("recal").onclick = () => { send({ type: "recalibrate" }); S.hist = []; };
+$("report-btn").onclick = () => send({ type: "report" });
+$("report-close").onclick = () => $("report").classList.add("hidden");
+$("dl-json").onclick = () => S.report && download("trip_report.json", JSON.stringify(S.report, null, 2), "application/json");
+$("dl-csv").onclick = () => {
+  if (!S.report || !S.report.timeline.length) return;
+  const rows = S.report.timeline, keys = Object.keys(rows[0]);
+  download("trip_timeline.csv", [keys.join(","), ...rows.map((r) => keys.map((k) => r[k] ?? "").join(","))].join("\n"), "text/csv");
+};
+$("opt-objects").onchange = (e) => send({ type: "config", objects: e.target.checked });
+document.querySelectorAll("#source-seg button").forEach((b) => (b.onclick = () => {
+  if (S.running) stop(false);
+  document.querySelectorAll("#source-seg button").forEach((x) => x.classList.toggle("active", x === b));
+  S.src = b.dataset.src;
+  $("stream-url").classList.toggle("hidden", S.src !== "stream");
+  $("src-label").textContent = { webcam: "webcam", file: "video file", stream: "network stream" }[S.src];
+  video.controls = S.src === "file";
+  if (S.src === "file") $("file-input").click();
+}));
+$("file-input").onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  if (S.fileURL) URL.revokeObjectURL(S.fileURL);
+  S.fileURL = URL.createObjectURL(f);
+  $("src-label").textContent = f.name;
+  video.srcObject = null; video.src = S.fileURL; video.controls = true;
+  $("placeholder").classList.add("hidden");
+};
+video.addEventListener("ended", () => { if (S.running && S.src === "file") stop(true); });
+video.addEventListener("play", () => { if (S.src === "file" && !S.running && S.fileURL && S.ready) { S.running = true; $("start").textContent = "Stop"; $("start").className = "btn danger"; ensureAudio(); send({ type: "recalibrate" }); startLoop(); } });
+document.querySelectorAll(".tab").forEach((b) => (b.onclick = () => {
+  document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + b.dataset.tab));
+  if (b.dataset.tab === "about") loadInfo();
+}));
+window.addEventListener("resize", () => drawChart($("chart"), S.hist, 60));
+
+function fillModels(models) {
+  const rows = [["Face landmarks", models.landmarks], ["Emotion", models.emotion], ["Phone / objects", models.objects],
+    ["Behaviour classifier", models.cabin], ["Temporal drowsiness", models.temporal]];
+  $("models-table").innerHTML = "<tr><th>Component</th><th>Model</th></tr>" + rows.map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v ? esc(v) : '<span class="muted">not loaded (train it, then pass the checkpoint)</span>'}</td></tr>`).join("");
+}
+async function loadInfo() {
+  try {
+    const info = await (await fetch("/api/info")).json();
+    if (info.models) fillModels(info.models);
+    if (info.metrics && info.metrics.length) {
+      $("metrics-table").innerHTML = "<tr><th>Task</th><th>Accuracy</th><th>Macro-F1</th><th>Protocol</th></tr>" + info.metrics.map((m) =>
+        `<tr><td>${esc(m.task)}<br><span class="muted small">${esc(m.run)}</span></td><td>${(m.accuracy * 100).toFixed(1)}%</td><td>${(m.macro_f1 * 100).toFixed(1)}%${m.std !== undefined ? ` ± ${(m.std * 100).toFixed(1)}` : ""}</td><td class="small">${esc(m.protocol)}</td></tr>`).join("");
+    }
+  } catch (e) { /* offline is fine */ }
+}
+
+updateStats({ features: {}, face: false, eye_openness: null, perclos: 0, blink_rate: null, yawns: 0, calibrating: null, behaviours: {}, detections: [], risk: null, emotion_probs: null });
+connect();

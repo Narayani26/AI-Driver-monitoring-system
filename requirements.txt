@@ -1,0 +1,20 @@
+# Core (tested with Python 3.13 on Linux; use Python 3.11-3.12 on macOS for the widest wheel support)
+torch>=2.3
+torchvision>=0.18
+timm>=1.0
+mediapipe>=0.10.14
+opencv-python>=4.9        # use opencv-python-headless on servers / Colab / Kaggle
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+matplotlib>=3.8
+# Detection (AGPL-3.0) - phone / cigarette / seatbelt
+ultralytics>=8.3
+# Deployment / benchmarking
+onnx>=1.16
+onnxruntime>=1.18
+# Web demo
+fastapi>=0.110
+uvicorn[standard]>=0.29
+# Dev
+pytest>=8
