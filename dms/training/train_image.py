@@ -17,10 +17,11 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from ..data.datasets import ManifestDataset, balanced_sampler, load_manifests, subject_split
+from ..data.datasets import ManifestDataset, balanced_sampler, load_manifests, random_split, subject_split
 from ..data.transforms import eval_transform, train_transform
 from ..models import checkpoint
 from ..models.networks import CABIN_CLASSES, EMOTION_CLASSES, EYE_CLASSES, YAWN_CLASSES, CabinNet, FaceStateNet
@@ -33,6 +34,7 @@ def get_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--kind", choices=["face", "cabin"], required=True)
     ap.add_argument("--manifest", nargs="+", required=True)
+    ap.add_argument("--test-manifest", nargs="*", default=[], help="datasets used ONLY for testing (e.g. KMU-FED for in-car emotion)")
     ap.add_argument("--out", default="runs/exp")
     ap.add_argument("--backbone", default=None, help="any timm model; default mobilenetv3_large_100 (face) / efficientnet_b0 (cabin)")
     ap.add_argument("--no-pretrained", action="store_true")
@@ -46,9 +48,13 @@ def get_args(argv=None):
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--test-frac", type=float, default=0.15)
     ap.add_argument("--no-balance", action="store_true")
+    ap.add_argument("--split", choices=["subject", "random"], default="subject",
+                    help="'random' ignores who is in the image - ONLY for the leakage study (E3)")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-steps", type=int, default=0, help="debug: stop each epoch after N steps")
+    ap.add_argument("--init-ckpt", help="fine-tune: start from this checkpoint (e.g. a model trained on public data)")
+    ap.add_argument("--freeze-epochs", type=int, default=0, help="fine-tune: train only the heads for the first N epochs")
     return ap.parse_args(argv)
 
 
@@ -80,10 +86,18 @@ def main(argv=None):
 
     df = load_manifests(a.manifest)
     df = df[(df[list(tasks)] >= 0).any(axis=1)]
-    df = subject_split(df, a.val_frac, a.test_frac, a.seed)
+    if a.split == "random":
+        print("WARNING: random image split - the same people are in train and test (leakage study only)")
+        df = random_split(df, a.val_frac, a.test_frac, a.seed)
+    else:
+        df = subject_split(df, a.val_frac, a.test_frac, a.seed)
+    if a.test_manifest:  # held-out datasets: never trained on, always test
+        held = load_manifests(a.test_manifest)
+        held = held[(held[list(tasks)] >= 0).any(axis=1)].assign(split="heldout")
+        df = pd.concat([df, held], ignore_index=True)
     df.to_csv(out / "split.csv", index=False)
     present = tuple(t for t in tasks if (df[t] >= 0).any())
-    print({s: int((df.split == s).sum()) for s in ("train", "val", "test")}, "tasks:", present)
+    print({s: int((df.split == s).sum()) for s in ("train", "val", "test", "heldout")}, "tasks:", present)
 
     # Horizontal flips would swap left/right-hand cabin classes (texting_right <-> texting_left).
     ttf = train_transform(a.img_size, flip=a.kind == "face")
@@ -96,15 +110,36 @@ def main(argv=None):
     kw = dict(batch_size=a.bs, num_workers=a.workers, pin_memory=device == "cuda", persistent_workers=a.workers > 0)
     tr_dl = DataLoader(tr, sampler=sampler, shuffle=sampler is None, drop_last=True, **kw)
     va_dl, te_dl = DataLoader(va, **kw), DataLoader(te, **kw)
+    held_df = df[df.split == "heldout"]
+    held_dl = DataLoader(ManifestDataset(held_df, etf, tasks), **kw) if len(held_df) else None
 
+    if a.init_ckpt and not a.backbone:  # fine-tuning: reuse the checkpoint's architecture
+        a.backbone = torch.load(a.init_ckpt, map_location="cpu", weights_only=False)["arch"]["backbone"]
     backbone = a.backbone or ("mobilenetv3_large_100" if a.kind == "face" else "efficientnet_b0")
+    pretrained = not a.no_pretrained and not a.init_ckpt  # no ImageNet download when weights come from a checkpoint
     if a.kind == "face":
         arch = {"backbone": backbone}
-        model = FaceStateNet(backbone, pretrained=not a.no_pretrained)
+        model = FaceStateNet(backbone, pretrained=pretrained)
     else:
         arch = {"backbone": backbone}
-        model = CabinNet(backbone, pretrained=not a.no_pretrained)
+        model = CabinNet(backbone, pretrained=pretrained)
+    if a.init_ckpt:
+        init, ck = checkpoint.load(a.init_ckpt)
+        if ck["kind"] != a.kind:
+            raise SystemExit(f"--init-ckpt is a {ck['kind']} model, expected {a.kind}")
+        if ck["arch"].get("backbone") != backbone:
+            raise SystemExit(f"--init-ckpt backbone {ck['arch'].get('backbone')} != --backbone {backbone}")
+        model.load_state_dict(init.state_dict())
+        print(f"fine-tuning from {a.init_ckpt}")
     model.to(device)
+    backbone_params = list((model.backbone if a.kind == "face" else model.net).parameters())
+
+    def set_backbone_trainable(flag: bool):
+        for p_ in backbone_params:
+            p_.requires_grad_(flag)
+        if a.kind == "cabin":  # the classifier layer lives inside model.net; keep it trainable
+            for p_ in model.net.get_classifier().parameters():
+                p_.requires_grad_(True)
 
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
     steps_per_epoch = a.max_steps or len(tr_dl)
@@ -116,6 +151,7 @@ def main(argv=None):
 
     best, history = -1.0, []
     for ep in range(a.epochs):
+        set_backbone_trainable(ep >= a.freeze_epochs)
         model.train()
         t0, run_loss, n = time.time(), 0.0, 0
         for i, (x, y) in enumerate(tr_dl):
@@ -133,7 +169,7 @@ def main(argv=None):
             scaler.step(opt)
             scaler.update()
             sched.step()
-            run_loss += float(loss)
+            run_loss += float(loss.detach())
             n += 1
         val = evaluate(model, va_dl, present, device, a.kind)
         score = float(np.mean([m["macro_f1"] for m in val.values()]))
@@ -149,9 +185,16 @@ def main(argv=None):
     model.to(device)
     test = evaluate(model, te_dl, present, device, a.kind)
     for t, m in test.items():
-        plot_confusion(m["confusion"], CLASSES[t], out / f"confusion_{t}.png", f"{t} (test, subject-independent)")
+        plot_confusion(m["confusion"], CLASSES[t], out / f"confusion_{t}.png", f"{t} (test, {'subject-independent' if a.split == 'subject' else 'RANDOM split'})")
         print(f"TEST {t}: acc={m['accuracy']:.4f} macroF1={m['macro_f1']:.4f} balAcc={m['balanced_accuracy']:.4f} ECE={m['ece']:.4f}")
-    (out / "metrics.json").write_text(json.dumps({"args": vars(a), "history": history, "test": test}, indent=2))
+    result = {"args": vars(a), "history": history, "test": test}
+    if held_dl is not None:
+        held_present = tuple(t for t in present if (held_df[t] >= 0).any())
+        result["test_heldout"] = heldout = evaluate(model, held_dl, held_present, device, a.kind)
+        for t, m in heldout.items():
+            plot_confusion(m["confusion"], CLASSES[t], out / f"confusion_{t}_heldout.png", f"{t} (held-out dataset, never trained on)")
+            print(f"HELD-OUT {t}: acc={m['accuracy']:.4f} macroF1={m['macro_f1']:.4f} (n={m['n']}, sources: {sorted(held_df.source.unique())})")
+    (out / "metrics.json").write_text(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

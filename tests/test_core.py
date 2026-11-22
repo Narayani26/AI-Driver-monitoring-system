@@ -175,3 +175,27 @@ def test_subject_split_no_leakage():
     out = subject_split(df, seed=1)
     assert_no_leakage(out)
     assert set(out.split) == {"train", "val", "test"}
+
+
+def test_random_split_is_leaky_and_subject_split_is_not():
+    from dms.data.datasets import random_split
+
+    df = pd.DataFrame({"path": [f"{i}.png" for i in range(600)], "subject": [f"s{i % 10}" for i in range(600)], "source": "x", "split": "", "eye": 1, "yawn": -1, "emotion": -1, "cabin": -1})
+    with pytest.raises(AssertionError):
+        assert_no_leakage(random_split(df, seed=0))
+    assert_no_leakage(subject_split(df, seed=0))
+
+
+def test_evaluate_alerts_scoring():
+    from dms.tools.evaluate_alerts import alert_times, score
+    from dms.tools.labels import Segment
+
+    segs = [Segment("a.mov", 10, 12.5, "eyes_closed"), Segment("a.mov", 30, 35, "look_away"), Segment("a.mov", 50, 50.5, "eyes_closed")]
+    log = [{"t": 11.0, "alerts": ["microsleep"]}, {"t": 14.0, "alerts": ["drowsy"]}, {"t": 33.0, "alerts": ["eyes_off_road"]},
+           {"t": 70.0, "alerts": ["eyes_off_road"]}, {"t": 80.0, "alerts": [], "yawns": 1}]
+    r = score(segs, alert_times(log), tolerance=3.0)
+    assert r["microsleep"]["events"] == 1 and r["microsleep"]["detected"] == 1  # 0.5 s closure is not required
+    assert r["microsleep"]["delays"] == [1.0]
+    assert r["eyes_off_road"]["detected"] == 1 and r["eyes_off_road"]["false_alarms"] == 1  # the one at t=70
+    assert r["drowsy"]["false_alarms"] == 0  # follow-on alert after a microsleep is fine
+    assert r["yawn"]["false_alarms"] == 1  # yawn counter rose with no labelled yawn

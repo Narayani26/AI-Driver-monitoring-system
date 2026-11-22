@@ -1,0 +1,27 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: System libraries for MediaPipe / OpenCV
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgles2 libgl1
+      - name: Install (CPU-only PyTorch keeps CI fast)
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install timm opencv-python-headless numpy pandas scikit-learn matplotlib onnx onnxruntime pytest mediapipe
+      - name: Unit tests
+        run: python -m pytest -q
+      - name: Training smoke test on synthetic data
+        run: |
+          PYTHONPATH=. python scripts/make_synthetic.py /tmp/synth
+          python -m dms.training.train_temporal /tmp/synth/seq --folds 3 --epochs 2 --steps-per-epoch 20 --out /tmp/synth/runs/t
+          python -m dms.training.train_image --kind face --manifest /tmp/synth/face.csv --no-pretrained --backbone mobilenetv3_small_100 --epochs 1 --bs 8 --max-steps 3 --workers 0 --img-size 96 --out /tmp/synth/runs/face

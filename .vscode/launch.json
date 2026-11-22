@@ -1,0 +1,47 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Demo: web app (http://localhost:8000)",
+      "type": "debugpy", "request": "launch", "module": "dms.web.server",
+      "args": [], "cwd": "${workspaceFolder}", "justMyCode": true
+    },
+    {
+      "name": "Demo: web app with trained models",
+      "type": "debugpy", "request": "launch", "module": "dms.web.server",
+      "args": ["--face-ckpt", "runs/face/best.pt", "--temporal-ckpt", "runs/temporal/deploy.pt"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Demo: webcam window (CLI)",
+      "type": "debugpy", "request": "launch", "module": "dms.app.run",
+      "args": ["--source", "0"], "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Demo: side-by-side video from a clip",
+      "type": "debugpy", "request": "launch", "module": "dms.app.run",
+      "args": ["--source", "${input:videoPath}", "--out", "runs/demo_side_by_side.mp4", "--side-by-side", "--headless", "--report", "runs/demo_report.json"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Train: temporal model (UTA-RLDD features, 5-fold)",
+      "type": "debugpy", "request": "launch", "module": "dms.training.train_temporal",
+      "args": ["features/rldd", "--model", "transformer", "--folds", "5", "--fit-all", "--out", "runs/temporal"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Smoke test: train on synthetic data",
+      "type": "debugpy", "request": "launch", "module": "dms.training.train_temporal",
+      "args": ["/tmp/dms_synth/seq", "--folds", "3", "--epochs", "3", "--steps-per-epoch", "30", "--out", "/tmp/dms_synth/runs/t"],
+      "cwd": "${workspaceFolder}", "preLaunchTask": "make synthetic data"
+    },
+    {
+      "name": "Debug: current file",
+      "type": "debugpy", "request": "launch", "program": "${file}", "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}" }
+    }
+  ],
+  "inputs": [
+    { "id": "videoPath", "type": "promptString", "description": "Path to a video file", "default": "recordings/clip.mov" }
+  ]
+}

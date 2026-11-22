@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "setup: create venv + install", "type": "shell",
+      "command": "python3.12 -m venv .venv && . .venv/bin/activate && pip install -U pip && pip install -r requirements.txt && bash scripts/download_models.sh",
+      "problemMatcher": [] },
+    { "label": "download pretrained models", "type": "shell", "command": "bash scripts/download_models.sh", "problemMatcher": [] },
+    { "label": "run tests", "type": "shell", "command": ".venv/bin/python -m pytest -q", "group": { "kind": "test", "isDefault": true }, "problemMatcher": [] },
+    { "label": "make synthetic data", "type": "shell", "command": "PYTHONPATH=. .venv/bin/python scripts/make_synthetic.py /tmp/dms_synth", "problemMatcher": [] },
+    { "label": "start web demo", "type": "shell", "command": ".venv/bin/python -m dms.web.server", "isBackground": true, "problemMatcher": [] }
+  ]
+}

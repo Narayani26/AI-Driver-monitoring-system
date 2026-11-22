@@ -57,10 +57,18 @@ def mrl_eye(root: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _find(root: Path, name: str) -> Path:
+    """First file/dir called `name` under root (Kaggle mirrors nest folders differently)."""
+    hit = next(iter(sorted(root.rglob(name), key=lambda p: len(p.parts))), None)
+    if hit is None:
+        raise FileNotFoundError(f"{name} not found under {root}")
+    return hit
+
+
 def statefarm(root: Path) -> pd.DataFrame:
     """State Farm Distracted Driver Detection (Kaggle). Uses driver_imgs_list.csv for driver IDs."""
-    lst = pd.read_csv(root / "driver_imgs_list.csv")
-    img_dir = root / "imgs" / "train"
+    lst = pd.read_csv(_find(root, "driver_imgs_list.csv"))
+    img_dir = next(d.parent for d in sorted(root.rglob("c0"), key=lambda p: len(p.parts)) if d.is_dir() and d.parent.name == "train")
     rows = [_row(img_dir / r.classname / r.img, f"sf_{r.subject}", "statefarm", cabin=int(r.classname[1:])) for r in lst.itertuples()]
     return pd.DataFrame(rows)
 

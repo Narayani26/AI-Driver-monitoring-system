@@ -93,7 +93,10 @@ def collect_metrics() -> list[dict]:
         name = str(p.parent.relative_to(ROOT / "runs"))
         if "test" in m:
             for task, v in m["test"].items():
-                rows.append({"run": name, "task": task, "protocol": "subject-independent test split", "accuracy": v["accuracy"], "macro_f1": v["macro_f1"], "n": v["n"]})
+                split = m.get("args", {}).get("split", "subject")
+                rows.append({"run": name, "task": task, "protocol": "subject-independent test split" if split == "subject" else "random split (leaky, for comparison)", "accuracy": v["accuracy"], "macro_f1": v["macro_f1"], "n": v["n"]})
+            for task, v in m.get("test_heldout", {}).items():
+                rows.append({"run": name, "task": task, "protocol": "held-out dataset (never trained on)", "accuracy": v["accuracy"], "macro_f1": v["macro_f1"], "n": v["n"]})
         elif "summary" in m:
             s = m["summary"]
             rows.append({"run": name, "task": "drowsiness (3-class)", "protocol": "subject-independent k-fold", "accuracy": s["video_accuracy"]["mean"], "macro_f1": s["window_macro_f1"]["mean"], "std": s["window_macro_f1"]["std"]})

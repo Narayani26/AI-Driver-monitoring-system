@@ -28,11 +28,12 @@ from .metrics import classification_metrics, plot_confusion
 from ..data.sequences import normalise_sequence
 
 
-def load_dir(d: Path) -> list[dict]:
+def load_dir(d: Path, calibrate: bool = True) -> list[dict]:
+    """calibrate=False uses one population-average profile for everyone (ablation for C2)."""
     vids = []
     for p in sorted(Path(d).glob("*.npz")):
         z = np.load(p, allow_pickle=True)
-        prof = DriverProfile(*z["profile"][:4], int(z["profile"][4])) if "profile" in z else DriverProfile()
+        prof = DriverProfile(*z["profile"][:4], int(z["profile"][4])) if calibrate and "profile" in z else DriverProfile()
         vids.append({"x": normalise_sequence(z["raw"], prof).astype(np.float32), "y": int(z["label"]), "subject": str(z["subject"]), "name": p.stem})
     if not vids:
         raise SystemExit(f"no .npz sequences in {d}")
@@ -140,6 +141,7 @@ def main(argv=None):
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--wd", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no-calibration", action="store_true", help="ablation: no per-driver normalisation")
     ap.add_argument("--fit-all", action="store_true", help="after CV, retrain on all data and save as deploy.pt")
     a = ap.parse_args(argv)
     torch.manual_seed(a.seed)
@@ -147,13 +149,13 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    vids = load_dir(a.data)
+    vids = load_dir(a.data, calibrate=not a.no_calibration)
     subjects = np.array([v["subject"] for v in vids])
     print(f"{len(vids)} videos, {len(set(subjects))} subjects, model={a.model}")
 
     results = []
     if a.test_dir:
-        test = load_dir(a.test_dir)
+        test = load_dir(a.test_dir, calibrate=not a.no_calibration)
         model, probs = run_fold(vids, test, a, device)
         results.append(evaluate(test, probs))
         folds = [("cross", model)]

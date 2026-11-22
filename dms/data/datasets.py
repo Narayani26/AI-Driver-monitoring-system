@@ -49,6 +49,18 @@ def subject_split(df: pd.DataFrame, val_frac: float = 0.15, test_frac: float = 0
     return df
 
 
+def random_split(df: pd.DataFrame, val_frac: float = 0.15, test_frac: float = 0.15, seed: int = 0) -> pd.DataFrame:
+    """Image-level random split that IGNORES subjects. Only for the leakage study
+    (paper experiment E3): the same driver appears in train and test, which is
+    how many published papers get ~99%. Never use it for reported results."""
+    df = df.copy()
+    rng = np.random.default_rng(seed)
+    blank = df.index[df.split == ""]
+    u = rng.random(len(blank))
+    df.loc[blank, "split"] = np.where(u < test_frac, "test", np.where(u < test_frac + val_frac, "val", "train"))
+    return df
+
+
 def assert_no_leakage(df: pd.DataFrame) -> None:
     per = df.groupby("subject").split.nunique()
     bad = per[per > 1]
