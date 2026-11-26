@@ -102,8 +102,11 @@ class MishapState:
 
 
 class MishapDetector:
-    def __init__(self, audio_thresh: float = 0.3, strong_audio: float = 0.5, check_s: float = 10.0, unresponsive_s: float = 3.0, sos_countdown_s: float = 15.0):
+    def __init__(self, audio_thresh: float = 0.3, strong_audio: float = 0.7, check_s: float = 10.0, unresponsive_s: float = 3.0, sos_countdown_s: float = 15.0):
         """Any evidence (jolt, or crash/skid sound >= audio_thresh) starts a *silent* check.
+        Thresholds measured on ESC-50 (dms.tools.evaluate_audio): crash sounds reach 0.3 in 90% of
+        glass-breaking clips (4% of other sounds, mostly fireworks/thunder); 0.7 is reached by 57%
+        with 2.7% false triggers, so a sound alone only *speaks* when it is that clear.
         The spoken "impact - are you OK?" warning needs strong evidence (a jolt or sound >= strong_audio);
         weak evidence only matters if the driver then becomes unresponsive."""
         self.audio_thresh, self.strong_audio, self.check_s, self.unresponsive_s, self.sos_countdown_s = audio_thresh, strong_audio, check_s, unresponsive_s, sos_countdown_s

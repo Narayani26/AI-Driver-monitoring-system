@@ -34,6 +34,11 @@ EMOTION_ALIASES = {
 }
 # AffectNet numeric folders: 0 neutral 1 happy 2 sad 3 surprise 4 fear 5 disgust 6 anger 7 contempt
 AFFECTNET_IDS = {str(i): c for i, c in enumerate(EMOTION_CLASSES)}
+# RAF-DB basic-emotion label numbers (1-7), as used by the official release and its Kaggle copies
+RAFDB_IDS = {"1": "surprise", "2": "fear", "3": "disgust", "4": "happy", "5": "sad", "6": "anger", "7": "neutral"}
+# Yawn/eye folder names seen in public datasets (case varies between copies)
+YAWN_EYE_MAP = {"yawn": ("yawn", 1), "no_yawn": ("yawn", 0), "no yawn": ("yawn", 0), "noyawn": ("yawn", 0),
+                "closed": ("eye", 0), "close": ("eye", 0), "closed_eyes": ("eye", 0), "open": ("eye", 1), "open_eyes": ("eye", 1)}
 
 
 def _row(path, subject, source, split="", **labels):
@@ -101,13 +106,17 @@ def emotion_folders(root: Path, source: str, id_map: dict | None = None) -> pd.D
     return pd.DataFrame(rows)
 
 
-def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subject_regex: str | None = None) -> pd.DataFrame:
+def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subject_regex: str | None = None,
+            case_insensitive: bool = False) -> pd.DataFrame:
     """Generic: folder name -> (task, label). Optional regex extracts subject from filename."""
     rows, rx = [], re.compile(subject_regex) if subject_regex else None
+    if case_insensitive:
+        mapping = {k.lower(): v for k, v in mapping.items()}
     for p in _images(root):
-        if p.parent.name not in mapping:
+        name = p.parent.name.lower() if case_insensitive else p.parent.name
+        if name not in mapping:
             continue
-        task, label = mapping[p.parent.name]
+        task, label = mapping[name]
         m = rx.search(p.name) if rx else None
         subj = f"{source}_{m.group(1)}" if m else _image_id(source, p, root)
         rows.append(_row(p, subj, source, **{task: label}))
@@ -116,7 +125,7 @@ def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subjec
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("kind", choices=["mrl", "statefarm", "fer", "affectnet", "rafdb", "kmufed", "folders"])
+    ap.add_argument("kind", choices=["mrl", "statefarm", "fer", "affectnet", "rafdb", "kmufed", "yawneye", "folders"])
     ap.add_argument("root", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--map", nargs="*", default=[], help="folders: NAME=task:label ...")
@@ -129,7 +138,11 @@ def main(argv=None):
         df = statefarm(a.root)
     elif a.kind == "affectnet":
         df = emotion_folders(a.root, "affectnet", AFFECTNET_IDS)
-    elif a.kind in ("fer", "rafdb", "kmufed"):
+    elif a.kind == "rafdb":
+        df = emotion_folders(a.root, "rafdb", RAFDB_IDS)
+    elif a.kind == "yawneye":
+        df = folders(a.root, YAWN_EYE_MAP, a.source or "yawn", a.subject_regex, case_insensitive=True)
+    elif a.kind in ("fer", "kmufed"):
         df = emotion_folders(a.root, a.kind)
     else:
         mapping = {}

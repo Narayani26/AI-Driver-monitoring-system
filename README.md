@@ -49,7 +49,7 @@ python -m dms.app.run --source rtsp://192.168.1.254/live                        
 
 > Linux servers/containers: MediaPipe needs `libegl1 libgles2` (`apt-get install -y libegl1 libgles2`).
 
-**Start here → [Complete guide: VS Code setup, testing, datasets, Kaggle, training, fine-tuning](docs/GUIDE.md)**
+**Start here → [Complete guide: VS Code setup, testing, datasets, Kaggle, training, fine-tuning](docs/GUIDE.md)** · **[Results so far](docs/RESULTS.md)**
 
 **Docs:** [Production & deployment](docs/PRODUCTION.md) · [Security](docs/SECURITY.md) · [Research study](docs/RESEARCH.md) · [Datasets & download plan](docs/DATASETS.md) · [Mac vs Kaggle, dash cam & phone deployment](docs/DEPLOYMENT.md) · [Demo script](docs/DEMO.md)
 

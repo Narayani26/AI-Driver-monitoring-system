@@ -5,7 +5,7 @@ only event scores leave this module.
 
 Groups (class indices from the model's own label list, resolved by name):
     snoring      -> deep drowsiness (strong evidence the driver is asleep)
-    distress     -> shouting / yelling / screaming / crying  (stress, conflict)
+    distress     -> shouting / yelling / screaming  (stress, conflict)
     impact       -> smash/crash, breaking, shatter, bang, explosion  (possible accident)
     skid         -> skidding, tire squeal  (hard braking / loss of control)
     horn         -> vehicle / truck horn  (near-miss context)
@@ -28,7 +28,8 @@ SAMPLE_RATE = 16000
 
 GROUPS: dict[str, tuple[str, ...]] = {
     "snoring": ("Snoring",),
-    "distress": ("Shout", "Yell", "Screaming", "Crying, sobbing"),
+    # not "Crying, sobbing": YAMNet fires it for babies too (36/40 ESC-50 baby clips raised a false "shouting" alert)
+    "distress": ("Shout", "Yell", "Screaming"),
     "impact": ("Smash, crash", "Breaking", "Shatter", "Bang", "Explosion"),
     "skid": ("Skidding", "Tire squeal"),
     "horn": ("Vehicle horn, car horn, honking", "Air horn, truck horn"),

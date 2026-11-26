@@ -450,3 +450,38 @@ def test_sensitivity_presets_change_alert_timing():
     assert microsleeps("normal", 1.2) == 1 and microsleeps("low", 1.2) == 0  # low tolerates a 1.2 s closure
     assert microsleeps("high", 0.9) == 1 and microsleeps("normal", 0.9) == 0
     assert SENSITIVITY["low"]["long_s"] > SENSITIVITY["normal"]["long_s"] > SENSITIVITY["high"]["long_s"]
+
+
+def test_dataset_discovery_by_content(tmp_path):
+    import cv2
+    from dms.data.discover import discover
+
+    img = np.zeros((16, 16, 3), np.uint8)
+
+    def put(*parts, n=3):
+        d = tmp_path.joinpath(*parts)
+        d.mkdir(parents=True, exist_ok=True)
+        for k in range(n):
+            cv2.imwrite(str(d / f"{parts[-1].replace(' ', '_')}_{k}.png"), img)
+
+    for sp in ("train", "test"):  # FER2013 (Kaggle new layout: datasets/<owner>/<slug>)
+        for e in ("angry", "happy", "sad", "neutral", "surprise"):
+            put("datasets", "msambare", "fer2013", sp, e)
+    for e in ("anger", "contempt", "disgust", "fear", "happy", "neutral", "sad", "surprise"):  # AffectNet copy
+        put("datasets", "someone", "affectnet-training-data", e)
+    for sp in ("train", "test"):  # RAF-DB copy with numeric folders
+        for i in range(1, 8):
+            put("datasets", "x", "raf-db-dataset", "DATASET", sp, str(i))
+    for f in ("yawn", "no_yawn", "Open", "Closed"):  # Yawn-Eye
+        put("datasets", "y", "yawn-eye-dataset-new", "dataset_new", "train", f)
+    for f in ("Drowsy", "Non Drowsy"):  # leaky DDD -> must be skipped
+        put("datasets", "z", "driver-drowsiness-dataset-ddd", f)
+    r = discover(tmp_path, tmp_path / "manifests")
+    kinds = sorted(f.kind for f in r["found"])
+    assert kinds == ["emotion", "emotion", "rafdb", "skipped", "yawneye"]
+    raf = pd.read_csv(next(p for p in r["face"] if "rafdb" in p))
+    assert set(raf.emotion) == set(range(7)) and set(raf.split) == {"train", "test"}
+    aff = pd.read_csv(next(p for p in r["face"] if "affectnet" in p))
+    assert len(aff) == 7 * 3  # contempt is not one of our 7 classes
+    ye = pd.read_csv(next(p for p in r["face"] if "yawn" in p))
+    assert (ye.yawn >= 0).sum() == 6 and (ye.eye >= 0).sum() == 6

@@ -294,6 +294,23 @@ The biggest accuracy gains come from **data, not epochs**:
 * **Sensitivity:** *Low (calm)* waits longer before alerting (eyes closed 1.5 s, looking away 4 s) and repeats alerts less often; *High* is stricter. Use **Low** for live demos with a laptop webcam, which reduces "too quick" alerts. You can also start the server with `--sensitivity low`.
 * Headless/in-car: `python -m dms.app.run ... --speak --voice Samantha` (macOS) or `--voice en-us+f3` (Linux espeak-ng female).
 
+### 5.7c More data: AffectNet, RAF-DB, Yawn-Eye (Kaggle)
+The notebook now **recognises datasets by their contents**, so attach any Kaggle copy and it is used automatically (section "1–2" of the notebook prints what it found and how it is used):
+1. Kaggle notebook editor → right panel → **Add Input** → **Datasets** filter → search and click **+** on:
+   * `affectnet`: choose one with emotion folders (anger, happy, …) or numbered folders 0–7
+   * `raf-db`: folders `1`…`7` (RAF-DB numbering)
+   * `yawn eye`: folders `yawn`, `no_yawn`, `Open`, `Closed`
+   * keep `fer2013`, `mrl-eye-dataset` and the State Farm competition attached
+2. Optional: upload **KMU-FED** as a private dataset with "kmu" in its name. It is used **only as a test set** (in-car faces), reported as "held-out".
+3. Set `PRESET = "best"` for the strongest models (EfficientNet-B2, 15 epochs, ~5–7 h with the extra data), or keep `"fast"` (~2–3 h).
+4. **Save Version → Save & Run All**, then download `dms_runs_best.zip` (or `dms_runs.zip`) and unzip it into the project.
+
+Datasets the notebook deliberately **skips**: "Driver Drowsiness Dataset (DDD)" copies. They are frames from the same videos without person IDs, so train and test would share people (the leakage trap from §5.2).
+
+On the Mac the same discovery works for anything in `data/`: `python -m dms.data.discover data manifests`.
+
+**Audio:** YAMNet needs no retraining; measure and tune it instead with ESC-50 / UrbanSound8K: `python -m dms.tools.evaluate_audio --csv ESC-50/meta/esc50.csv --audio ESC-50/audio` (results in `docs/RESULTS.md`).
+
 ### 5.8 Optional features: cabin audio and accident detection
 ```bash
 python -m dms.web.server --face-ckpt runs/face/best.pt --audio --mishap

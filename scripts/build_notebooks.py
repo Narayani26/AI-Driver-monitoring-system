@@ -54,46 +54,21 @@ os.chdir("/kaggle/working/dms")
 !git log --oneline -1
 import torch; print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE - enable the GPU accelerator!")
 """)
-md("## 1. Find the attached datasets")
-code("""
-from pathlib import Path
-INPUT = Path("/kaggle/input")
-for d in sorted(INPUT.iterdir()):
-    print(d)
-
-def find_dir(*markers):
-    \"\"\"First folder under /kaggle/input that contains one of the marker files/folders.\"\"\"
-    for m in markers:
-        hit = next(iter(sorted(INPUT.rglob(m), key=lambda p: len(p.parts))), None)
-        if hit is not None:
-            return hit.parent
-    return None
-
-STATEFARM = find_dir("driver_imgs_list.csv")
-FER       = find_dir("angry")            # FER2013 class folders (train/angry, test/angry, ...)
-MRL       = find_dir("s0001_*.png")      # MRL eye crops are named s0001_00001_...
-YAWN      = find_dir("yawn")             # yawn / no_yawn folders
-print("State Farm:", STATEFARM, "\\nFER:", FER and FER.parent, "\\nMRL:", MRL, "\\nYawn:", YAWN and YAWN.parent)
+md("""
+## 1–2. Find every attached dataset and build manifests
+Datasets are recognised by their **contents**, so any Kaggle copy works. Attach as many as you like (right panel → Add Input):
+* **Faces/emotions:** FER2013 (`msambare/fer2013`), **AffectNet** (search "affectnet"), **RAF-DB** (search "raf-db")
+* **Eyes/yawns:** MRL Eye, a **Yawn-Eye** dataset (search "yawn eye")
+* **KMU-FED** (if you upload it): used as an in-car **test-only** set
+* **State Farm** competition → cabin behaviour
+Copies of the "Driver Drowsiness Dataset (DDD)" are skipped on purpose: they are frames from the same videos without person IDs, so any train/test split would leak people and inflate the score.
 """)
-md("## 2. Build manifests (one CSV per dataset, with person IDs for leakage-free splits)")
 code("""
-os.makedirs("manifests", exist_ok=True)
-face_manifests = []
-if MRL:
-    !python -m dms.data.manifests mrl "{MRL.parent}" manifests/mrl.csv
-    face_manifests.append("manifests/mrl.csv")
-if YAWN:
-    !python -m dms.data.manifests folders "{YAWN.parent}" manifests/yawn.csv --map yawn=yawn:1 no_yawn=yawn:0 Closed=eye:0 Open=eye:1 --source yawn
-    face_manifests.append("manifests/yawn.csv")
-if FER:
-    !python -m dms.data.manifests fer "{FER.parent}" manifests/fer.csv
-    face_manifests.append("manifests/fer.csv")
-# Private uploads (AffectNet / KMU-FED): attach them, then uncomment and fix the path
-# !python -m dms.data.manifests affectnet /kaggle/input/<your-affectnet>/ manifests/affectnet.csv ; face_manifests.append("manifests/affectnet.csv")
-if STATEFARM:
-    !python -m dms.data.manifests statefarm "{STATEFARM}" manifests/statefarm.csv
-face_manifests = [m for m in face_manifests if os.path.exists(m)]  # skip datasets that failed to parse
-print("face training data:", face_manifests, "| State Farm:", os.path.exists("manifests/statefarm.csv"))
+import sys
+sys.path.insert(0, "/kaggle/working/dms")
+from dms.data.discover import discover
+found = discover("/kaggle/input", "manifests")
+face_manifests, face_test, cabin_manifests = found["face"], found["face_test"], found["cabin"]
 """)
 md("""
 ## 3. Multi-task face model (eye state + yawn + emotion)
@@ -101,7 +76,8 @@ One backbone, three heads, trained on the union of datasets (each image only has
 """)
 code("""
 if face_manifests:
-    !python -m dms.training.train_image --kind face --manifest {" ".join(face_manifests)} \\
+    test_arg = ("--test-manifest " + " ".join(face_test)) if face_test else ""
+    !python -m dms.training.train_image --kind face --manifest {" ".join(face_manifests)} {test_arg} \\
         --backbone {BACKBONE_FACE} --epochs {EPOCHS_FACE} --bs {BS} --lr 5e-4 --workers 4 {EXTRA} --out {OUT}/face
 """)
 md("""
@@ -109,7 +85,7 @@ md("""
 The same model trained twice: **driver-independent split** (honest) vs **random image split** (what many papers do). The gap between the two is a result for the paper.
 """)
 code("""
-if os.path.exists("manifests/statefarm.csv"):
+if cabin_manifests:
     !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone {BACKBONE_CABIN} \\
         --epochs {EPOCHS_CABIN} --bs 64 --workers 4 --out {OUT}/cabin
     !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone {BACKBONE_CABIN} \\
@@ -139,7 +115,7 @@ code("""
 import json, glob
 for p in sorted(glob.glob(f"{OUT}/**/metrics.json", recursive=True)):
     m = json.load(open(p))
-    for task, v in m.get("test", {}).items():
+    for task, v in list(m.get("test", {}).items()) + [(t + " (held-out)", v) for t, v in m.get("test_heldout", {}).items()]:
         print(f"{p:45s} {task:8s} acc={v['accuracy']:.4f}  macroF1={v['macro_f1']:.4f}  ECE={v['ece']:.3f} (uncalibrated {v.get('ece_uncalibrated', v['ece']):.3f})  n={v['n']}")
 !cd /kaggle/working/dms && zip -qr /kaggle/working/dms_{OUT}.zip {OUT} -x "{OUT}/**/last.pt" && ls -lh /kaggle/working/dms_{OUT}.zip
 """)
