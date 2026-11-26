@@ -199,3 +199,19 @@ def test_evaluate_alerts_scoring():
     assert r["eyes_off_road"]["detected"] == 1 and r["eyes_off_road"]["false_alarms"] == 1  # the one at t=70
     assert r["drowsy"]["false_alarms"] == 0  # follow-on alert after a microsleep is fine
     assert r["yawn"]["false_alarms"] == 1  # yawn counter rose with no labelled yawn
+
+
+def test_same_file_name_in_train_and_test_is_not_one_subject(tmp_path):
+    import cv2
+    from dms.data.manifests import emotion_folders
+
+    img = np.zeros((8, 8, 3), np.uint8)
+    for split in ("train", "test"):
+        for emo in ("angry", "happy", "sad"):
+            d = tmp_path / split / emo
+            d.mkdir(parents=True)
+            for k in range(3):
+                cv2.imwrite(str(d / f"im{k}.png"), img)  # identical names across splits, like FER2013
+    df = emotion_folders(tmp_path, "fer")
+    assert df.subject.nunique() == len(df) == 18
+    assert_no_leakage(subject_split(df, seed=0))

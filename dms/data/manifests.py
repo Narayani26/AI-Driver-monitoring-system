@@ -73,6 +73,14 @@ def statefarm(root: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _image_id(source: str, p: Path, root: Path) -> str:
+    """Unique per-image group ID for datasets without person IDs. Uses the path
+    inside the dataset, not just the file name: FER2013 has files with the same
+    name in train/ and test/, which would otherwise look like one person in two
+    splits and trip the leakage check."""
+    return f"{source}_{p.relative_to(root).with_suffix('').as_posix()}"
+
+
 def emotion_folders(root: Path, source: str, id_map: dict | None = None) -> pd.DataFrame:
     """ImageFolder-style emotion data (FER2013 / RAF-DB / AffectNet / KMU-FED exports).
 
@@ -89,7 +97,7 @@ def emotion_folders(root: Path, source: str, id_map: dict | None = None) -> pd.D
             continue
         split = next((s for s in ("train", "val", "test") if s in {q.name.lower() for q in p.parents}), "")
         split = {"val": "val", "test": "test", "train": "train"}.get(split, "")
-        rows.append(_row(p, f"{source}_{p.stem}", source, split, emotion=EMOTION_CLASSES.index(cls)))
+        rows.append(_row(p, _image_id(source, p, root), source, split, emotion=EMOTION_CLASSES.index(cls)))
     return pd.DataFrame(rows)
 
 
@@ -101,7 +109,7 @@ def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subjec
             continue
         task, label = mapping[p.parent.name]
         m = rx.search(p.name) if rx else None
-        subj = f"{source}_{m.group(1)}" if m else f"{source}_{p.stem}"
+        subj = f"{source}_{m.group(1)}" if m else _image_id(source, p, root)
         rows.append(_row(p, subj, source, **{task: label}))
     return pd.DataFrame(rows)
 
