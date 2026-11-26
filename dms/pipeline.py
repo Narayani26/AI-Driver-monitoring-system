@@ -34,6 +34,15 @@ from .perception.objects import WEIGHTS as YOLO_WEIGHTS, Detection, behaviour_sc
 from .report import SessionRecorder
 
 
+# How long a condition must last before it alerts, and how often an alert may repeat.
+# "low" = calmer (fewer, later alerts), "high" = stricter (earlier alerts).
+SENSITIVITY = {
+    "low": dict(microsleep_s=1.5, long_s=4.0, vats_cum_s=12.0, yawn_min_s=2.0, cooldown_scale=1.5, drowsy_threshold=0.7),
+    "normal": dict(microsleep_s=1.0, long_s=3.0, vats_cum_s=10.0, yawn_min_s=1.5, cooldown_scale=1.0, drowsy_threshold=0.6),
+    "high": dict(microsleep_s=0.8, long_s=2.5, vats_cum_s=8.0, yawn_min_s=1.2, cooldown_scale=0.75, drowsy_threshold=0.5),
+}
+
+
 @dataclass
 class MonitorConfig:
     landmarker: str | None = None
@@ -55,6 +64,7 @@ class MonitorConfig:
     seq_len: int = 300  # 30 s at 10 Hz
     seq_rate_hz: float = 10.0
     threads: int = 2
+    sensitivity: str = "normal"  # low | normal | high (see SENSITIVITY)
     audio: bool = False  # YAMNet cabin-audio events (needs audio pushed via push_audio)
     mishap: bool = False  # possible-accident detection (camera jolt and/or crash sounds)
 
@@ -154,12 +164,9 @@ class DriverMonitor:
         self.calibrator = Calibrator(cfg.calib_seconds)
         if cfg.profile:
             self.calibrator.profile = DriverProfile.load(cfg.profile)
-        self.eyes = EyeClosureTracker()
-        self.yawn = YawnTracker()
-        self.glance = GlanceTracker()
+        self._build_trackers()
         self.seq = FeatureSequence(cfg.seq_len, cfg.seq_rate_hz)
         self.fusion = RiskFusion()
-        self.alerter = AlertManager()
         self.recorder = SessionRecorder()
         self._thr_face, self._thr_cabin, self._thr_temp = _Throttle(cfg.face_hz), _Throttle(cfg.cabin_hz), _Throttle(cfg.temporal_hz)
         self._thr_obj, self._thr_eye = _Throttle(cfg.object_hz), _Throttle(cfg.eye_hz)
@@ -171,6 +178,22 @@ class DriverMonitor:
         self._audio = None
         self.jolt = JoltDetector()
         self.mishap = MishapDetector() if cfg.mishap else None
+
+    def _build_trackers(self):
+        p = SENSITIVITY.get(self.cfg.sensitivity, SENSITIVITY["normal"])
+        from .fusion.alerts import COOLDOWN_S
+
+        self.eyes = EyeClosureTracker(microsleep_s=p["microsleep_s"])
+        self.yawn = YawnTracker(min_s=p["yawn_min_s"])
+        self.glance = GlanceTracker(long_s=p["long_s"], vats_cum_s=p["vats_cum_s"])
+        self.alerter = AlertManager(cooldowns={k: v * p["cooldown_scale"] for k, v in COOLDOWN_S.items()},
+                                    drowsy_threshold=p["drowsy_threshold"])
+
+    def set_sensitivity(self, level: str):
+        """Switch low/normal/high on the fly; keeps the driver's calibration."""
+        if level in SENSITIVITY and level != self.cfg.sensitivity:
+            self.cfg.sensitivity = level
+            self.reset(keep_profile=True)
 
     def push_audio(self, t: float, pcm: np.ndarray):
         """Feed 16 kHz mono float PCM. Returns the new AudioState when a window was classified."""
@@ -217,9 +240,9 @@ class DriverMonitor:
         prof = self.calibrator.profile if keep_profile else None
         self.calibrator = Calibrator(self.cfg.calib_seconds)
         self.calibrator.profile = prof
-        self.eyes, self.yawn, self.glance = EyeClosureTracker(), YawnTracker(), GlanceTracker()
+        self._build_trackers()
         self.seq = FeatureSequence(self.cfg.seq_len, self.cfg.seq_rate_hz)
-        self.fusion, self.alerter = RiskFusion(), AlertManager()
+        self.fusion = RiskFusion()
         self.recorder.reset()
         self._emotion_p = self._cabin_p = self._alert_p = None
         self._eye_p = None

@@ -31,6 +31,13 @@
     <button id="recal" class="btn" title="Look straight at the road for a few seconds">Recalibrate</button>
     <span class="spacer"></span>
     <label class="toggle"><input type="checkbox" id="opt-voice" checked> Voice</label>
+    <select id="voice-select" class="select" title="Alert voice"></select>
+    <button id="voice-test" class="btn" title="Hear the selected voice">▶︎</button>
+    <select id="sens-select" class="select" title="Alert sensitivity: Low = calmer, alerts later; High = stricter">
+      <option value="low">Sensitivity: Low (calm)</option>
+      <option value="normal" selected>Sensitivity: Normal</option>
+      <option value="high">Sensitivity: High (strict)</option>
+    </select>
     <label class="toggle"><input type="checkbox" id="opt-sound" checked> Buzzer</label>
     <label class="toggle"><input type="checkbox" id="opt-objects" checked> Phone/object detection</label>
     <label class="toggle hidden" id="opt-audio-wrap" title="Microphone (webcam mode) or the video's own sound (file mode). Audio is analysed in memory and never recorded."><input type="checkbox" id="opt-audio"> 🎤 Audio</label>

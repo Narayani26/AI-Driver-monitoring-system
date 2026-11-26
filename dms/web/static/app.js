@@ -29,6 +29,7 @@ function connect() {
     if (m.type === "ready") {
       S.ready = true; setConn("connected", true); fillModels(m.models);
       S.features = m.features || {};
+      if (S.features.sensitivity) $("sens-select").value = S.features.sensitivity;
       $("opt-audio-wrap").classList.toggle("hidden", !S.features.audio);
       $("audio-card").classList.toggle("hidden", !S.features.audio);
     }
@@ -310,11 +311,49 @@ function speak(a) {
   if (speechSynthesis.speaking && sev <= S.speakingSev) return; // don't interrupt something more important
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(sev >= 2 ? `${a.message} ${a.suggestion}` : a.message);
-  u.rate = 1.02; u.lang = "en-US";
+  applyVoice(u);
   u.onend = () => (S.speakingSev = -1);
   S.speakingSev = sev;
   speechSynthesis.speak(u);
 }
+// ---------------------------------------------------------------- alert voice (female by default, choosable)
+// Best-sounding female voices first. Which exist depends on the OS/browser:
+// Edge "Natural" voices, Chrome's Google voices, macOS (Samantha, Veena = Indian English, Karen, ...), Windows (Aria, Jenny, Zira).
+const FEMALE_HINTS = ["Aria Online (Natural)", "Jenny Online (Natural)", "Neerja Online (Natural)", "Sonia Online (Natural)",
+  "Samantha (Enhanced)", "Ava (Premium)", "Ava (Enhanced)", "Zoe (Premium)", "Zoe (Enhanced)", "Google UK English Female",
+  "Veena", "Samantha", "Ava", "Karen", "Moira", "Tessa", "Fiona", "Victoria", "Serena", "Google US English", "Microsoft Zira", "Zira", "female"];
+function femaleRank(v) {
+  const i = FEMALE_HINTS.findIndex((h) => v.name.toLowerCase().includes(h.toLowerCase()));
+  return i < 0 ? 999 : i;
+}
+let VOICES = [];
+function loadVoices() {
+  if (!("speechSynthesis" in window)) return;
+  VOICES = speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith("en"))
+    .sort((a, b) => femaleRank(a) - femaleRank(b) || a.name.localeCompare(b.name));
+  const sel = $("voice-select");
+  let saved = null;
+  try { saved = localStorage.getItem("dms_voice"); } catch (e) { /* storage blocked: use default */ }
+  sel.innerHTML = VOICES.map((v) => `<option value="${esc(v.name)}">${esc(v.name.replace(/^Microsoft |^Google /, ""))}${femaleRank(v) < 999 ? " ♀" : ""}</option>`).join("")
+    || "<option>default voice</option>";
+  if (saved && VOICES.some((v) => v.name === saved)) sel.value = saved;
+}
+function applyVoice(u) {
+  const v = VOICES.find((x) => x.name === $("voice-select").value) || VOICES[0];
+  if (v) { u.voice = v; u.lang = v.lang; } else u.lang = "en-US";
+  u.rate = 0.97; u.pitch = 1.05; // slightly slower and warmer than the default
+}
+if ("speechSynthesis" in window) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
+$("voice-select").onchange = (e) => { try { localStorage.setItem("dms_voice", e.target.value); } catch (err) { /* ignore */ } };
+$("voice-test").onclick = () => {
+  if (!("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance("Please look ahead at the road. Keep your eyes on the road.");
+  applyVoice(u);
+  speechSynthesis.speak(u);
+};
+$("sens-select").onchange = (e) => send({ type: "config", sensitivity: e.target.value });
+
 function fmtTime(t) { const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, "0")}`; }
 
 // ---------------------------------------------------------------- chart

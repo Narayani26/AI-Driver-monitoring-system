@@ -53,9 +53,10 @@ class Alert:
 
 
 class AlertManager:
-    def __init__(self, messages: dict | None = None, cooldowns: dict | None = None):
+    def __init__(self, messages: dict | None = None, cooldowns: dict | None = None, drowsy_threshold: float = 0.6):
         self.messages = messages or MESSAGES
         self.cooldowns = cooldowns or COOLDOWN_S
+        self.drowsy_threshold = drowsy_threshold
         self._last: dict[str, float] = {}
         self._active: dict[str, float] = {}  # kind -> since
         self._hits: dict[str, list[float]] = {}  # audio detections per kind
@@ -104,7 +105,7 @@ class AlertManager:
 
         if microsleep:
             add(self._fire("microsleep", t, f"eyes closed {closed_duration:.1f}s"))
-        drowsy = risk is not None and (risk.drowsiness >= 0.6 or alertness == "drowsy")
+        drowsy = risk is not None and (risk.drowsiness >= self.drowsy_threshold or alertness == "drowsy")
         if self._sustained("drowsy", drowsy and not microsleep, t, 2.0):
             add(self._fire("drowsy", t, f"drowsiness {risk.drowsiness:.0%}"))
         if yawns_5min >= 3:

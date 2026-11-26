@@ -289,6 +289,11 @@ The biggest accuracy gains come from **data, not epochs**:
 
 "Human-level" is a moving target: for eye state we are already there; for facial emotion, models beat the average human on FER2013, and the real limit is that expressions are ambiguous.
 
+### 5.7b Alert voice and sensitivity
+* **Voice:** the dropdown next to *Voice* lists the English voices your computer has, female voices first (♀); the ▶︎ button plays a sample. Your choice is remembered in this browser. For a nicer voice on a Mac: **System Settings → Accessibility → Spoken Content → System voice → Manage Voices…** → download **Samantha (Enhanced)**, **Ava (Premium)** or **Veena** (Indian English), then reload the page. On Windows, Microsoft Edge offers the most natural voices (Aria, Jenny, Neerja).
+* **Sensitivity:** *Low (calm)* waits longer before alerting (eyes closed 1.5 s, looking away 4 s) and repeats alerts less often; *High* is stricter. Use **Low** for live demos with a laptop webcam, which reduces "too quick" alerts. You can also start the server with `--sensitivity low`.
+* Headless/in-car: `python -m dms.app.run ... --speak --voice Samantha` (macOS) or `--voice en-us+f3` (Linux espeak-ng female).
+
 ### 5.8 Optional features: cabin audio and accident detection
 ```bash
 python -m dms.web.server --face-ckpt runs/face/best.pt --audio --mishap

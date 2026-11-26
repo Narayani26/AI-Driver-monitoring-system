@@ -34,10 +34,21 @@ def open_writer(path: str, fps: float, size) -> cv2.VideoWriter:
 class Speaker:
     """Non-blocking on-device text-to-speech for headless/in-car use (no browser, no internet)."""
 
-    def __init__(self):
+    FEMALE_MAC = ("Samantha", "Veena", "Karen", "Moira", "Tessa", "Fiona", "Victoria")
+
+    def __init__(self, voice: str | None = None):
         import shutil
+        import subprocess
 
         self.cmd = next(([c] for c in ("say", "espeak-ng", "espeak", "spd-say") if shutil.which(c)), None)
+        if self.cmd == ["say"]:  # macOS: pick a female voice that is installed
+            installed = subprocess.run(["say", "-v", "?"], capture_output=True, text=True).stdout
+            names = [line.split()[0] for line in installed.splitlines() if line.strip()]
+            pick = voice if voice else next((v for v in self.FEMALE_MAC if v in names), None)
+            if pick:
+                self.cmd = ["say", "-v", pick, "-r", "180"]
+        elif self.cmd and self.cmd[0].startswith("espeak"):
+            self.cmd = self.cmd + ["-v", voice or "en-us+f3", "-s", "160"]  # +f3 = female variant
         self.proc = None
         self.sev = -1
         if self.cmd is None:
@@ -78,6 +89,8 @@ def main(argv=None):
     ap.add_argument("--yolo", help="YOLO weights (default weights/yolo11n.pt)")
     ap.add_argument("--mishap", action="store_true", help="possible-accident detection (camera jolt + unresponsive driver)")
     ap.add_argument("--speak", action="store_true", help="speak alerts with the system voice (macOS 'say', Linux 'espeak-ng'/'spd-say')")
+    ap.add_argument("--voice", help="voice for --speak, e.g. Samantha / Veena / Karen on macOS (list: say -v '?'); default: a female voice")
+    ap.add_argument("--sensitivity", choices=["low", "normal", "high"], default="normal", help="low = calmer, high = stricter")
     ap.add_argument("--store", help="offline event store (SQLite) for alerts + trip summary, e.g. ~/.dms/events.db")
     a = ap.parse_args(argv)
 
@@ -91,13 +104,13 @@ def main(argv=None):
 
     mon = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, profile=a.profile,
                                       calib_seconds=a.calib_seconds, objects=not a.no_objects, yolo_weights=a.yolo,
-                                      emotion_source=a.emotion, mishap=a.mishap))
+                                      emotion_source=a.emotion, mishap=a.mishap, sensitivity=a.sensitivity))
     store = session = None
     if a.store:
         from ..storage import EventStore
 
         store, session = EventStore(Path(a.store).expanduser()), EventStore.new_session()
-    voice = Speaker() if a.speak else None
+    voice = Speaker(a.voice) if a.speak else None
     writer = log = None
     if a.log:
         log = open(a.log, "w")

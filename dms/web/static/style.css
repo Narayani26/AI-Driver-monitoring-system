@@ -140,3 +140,4 @@ th { color: var(--muted); font-weight: 500; }
 .sos-count { font-size: 84px; font-weight: 800; line-height: 1.1; margin: 10px 0; font-variant-numeric: tabular-nums; }
 .sos-note { color: #d0d7de; margin-bottom: 18px; }
 .sos-ok { font-size: 22px; padding: 14px 40px; background: var(--ok); border-color: var(--ok); color: #04210c; font-weight: 800; }
+.select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; max-width: 220px; }

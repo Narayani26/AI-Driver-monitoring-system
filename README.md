@@ -35,6 +35,7 @@ It works offline. Pretrained models are used until you train your own; add check
 **Optional features** (off by default):
 * `--audio`: cabin audio (YAMNet): snoring, shouting, sirens, phone ringing, crash/skid sounds; analysed in memory, never recorded.
 * `--mishap`: possible-accident detection: camera jolt or crash sound + unresponsive driver → "Are you OK?" countdown → SOS event.
+* `--sensitivity low|normal|high`: how quickly alerts fire (also switchable in the page); a female alert voice is chosen by default and can be changed in the page.
 * `--face-ckpt runs/face/best.pt`: use your trained eye-state network (fused with eye geometry) and optionally `--emotion trained`.
 
 **Security and offline:** loopback-only by default, access token when exposed (`--host 0.0.0.0`), Origin/Host checks, model checksums, no footage stored, offline event store with store-and-forward sync (`--sync-url`). See [SECURITY.md](docs/SECURITY.md) and [PRODUCTION.md](docs/PRODUCTION.md).

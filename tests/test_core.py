@@ -435,3 +435,18 @@ def test_temperature_scaling_fixes_overconfidence():
     after = expected_calibration_error(torch.softmax(logits / T, -1).numpy(), y.numpy())
     assert T > 2 and after < before / 3
     assert (torch.softmax(logits / T, -1).argmax(1) == pred).all()  # predictions unchanged
+
+
+def test_sensitivity_presets_change_alert_timing():
+    from dms.pipeline import SENSITIVITY
+
+    def microsleeps(level, closed_s):
+        tr = EyeClosureTracker(microsleep_s=SENSITIVITY[level]["microsleep_s"])
+        for i in range(90):  # 3 s at 30 FPS, eyes closed from 1.0 s for `closed_s`
+            t = i / 30
+            tr.update(t, 0.05 if 1.0 <= t < 1.0 + closed_s else 0.30, PROF)
+        return tr.microsleep_events
+
+    assert microsleeps("normal", 1.2) == 1 and microsleeps("low", 1.2) == 0  # low tolerates a 1.2 s closure
+    assert microsleeps("high", 0.9) == 1 and microsleeps("normal", 0.9) == 0
+    assert SENSITIVITY["low"]["long_s"] > SENSITIVITY["normal"]["long_s"] > SENSITIVITY["high"]["long_s"]

@@ -258,6 +258,8 @@ class Session:
         elif kind == "config":
             if "objects" in msg:
                 self.mon._objects_enabled = bool(msg["objects"])
+            if msg.get("sensitivity") in ("low", "normal", "high"):
+                self.mon.set_sensitivity(msg["sensitivity"])
             if "calib_seconds" in msg:
                 v = float(msg["calib_seconds"])
                 if 1.0 <= v <= 60.0:
@@ -332,7 +334,8 @@ async def ws_endpoint(ws: WebSocket):
     try:
         keys = ("face_ckpt", "cabin_ckpt", "temporal_ckpt", "yolo_weights")
         cfg = MonitorConfig(**{k: CFG.get(k) for k in keys if CFG.get(k)}, calib_seconds=CFG.get("calib_seconds", 5.0),
-                            emotion_source=CFG.get("emotion_source", "pretrained"), audio=CFG["audio"], mishap=CFG["mishap"])
+                            emotion_source=CFG.get("emotion_source", "pretrained"), audio=CFG["audio"], mishap=CFG["mishap"],
+                            sensitivity=CFG.get("sensitivity", "normal"))
         s.mon = await run_in_threadpool(DriverMonitor, cfg)
         s.mon._objects_enabled = True
         orig = s.mon.object_model
@@ -340,7 +343,7 @@ async def ws_endpoint(ws: WebSocket):
             s.mon.object_model = lambda frame: orig(frame) if s.mon._objects_enabled else []
             s.mon.object_model.name = orig.name
         await s.send({"type": "ready", "models": {**s.mon.models_info(), "objects": orig.name if orig else None},
-                      "features": {"audio": CFG["audio"], "mishap": CFG["mishap"]}})
+                      "features": {"audio": CFG["audio"], "mishap": CFG["mishap"], "sensitivity": CFG.get("sensitivity", "normal")}})
         while True:
             m = await ws.receive()
             if m["type"] == "websocket.disconnect":
@@ -375,6 +378,8 @@ def main(argv=None):
     ap.add_argument("--emotion", choices=["pretrained", "trained"], default="pretrained",
                     help="emotion model: pretrained HSEmotion (default) or the emotion head of --face-ckpt")
     ap.add_argument("--yolo", help="YOLO weights (default weights/yolo11n.pt; pass a fine-tuned best.pt)")
+    ap.add_argument("--sensitivity", choices=["low", "normal", "high"], default="normal",
+                    help="low = calmer (alerts later, repeat less), high = stricter; can also be changed in the page")
     ap.add_argument("--audio", action="store_true", help="enable cabin-audio events (YAMNet): snoring, shouting, sirens, crash sounds")
     ap.add_argument("--mishap", action="store_true", help="enable possible-accident detection (camera jolt / crash sound + unresponsive driver)")
     ap.add_argument("--token", help="access token (default: random when --host is not loopback; env DMS_TOKEN also works)")
@@ -394,7 +399,7 @@ def main(argv=None):
     if exposed and not a.ssl_certfile:
         print("  WARNING: serving on the network without HTTPS - camera frames travel unencrypted. Use --ssl-certfile/--ssl-keyfile.")
     CFG.update(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, yolo_weights=a.yolo, calib_seconds=a.calib_seconds,
-               emotion_source=a.emotion, audio=a.audio, mishap=a.mishap, token=token, bind_host=a.host,
+               emotion_source=a.emotion, audio=a.audio, mishap=a.mishap, sensitivity=a.sensitivity, token=token, bind_host=a.host,
                allow_files=a.allow_files, origins=set(a.allow_origin), weight_problems=problems)
     if a.store:
         STATE["store"] = EventStore(a.store)
