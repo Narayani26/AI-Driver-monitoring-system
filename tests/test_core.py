@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import pandas as pd
 import pytest
@@ -215,3 +216,222 @@ def test_same_file_name_in_train_and_test_is_not_one_subject(tmp_path):
     df = emotion_folders(tmp_path, "fer")
     assert df.subject.nunique() == len(df) == 18
     assert_no_leakage(subject_split(df, seed=0))
+
+
+# ---------------------------------------------------------------- audio / mishap / eye fusion
+def test_audio_group_scorer():
+    from dms.perception.audio import GroupScorer
+
+    labels = ["Speech", "Snoring", "Smash, crash", "Skidding", "Ringtone"]
+    sc = GroupScorer(labels, decay=0.5)
+    g = sc.update(np.array([0.9, 0.0, 0.8, 0.1, 0.0], np.float32))
+    assert g["impact"] == pytest.approx(0.8) and g["snoring"] == 0.0 and g["siren"] == 0.0  # missing classes -> 0
+    g = sc.update(np.zeros(5, np.float32))
+    assert g["impact"] == pytest.approx(0.4)  # decays instead of vanishing
+
+
+def test_jolt_detector_fires_on_whole_frame_change_only():
+    import cv2
+    from dms.fusion.mishap import JoltDetector
+
+    base = np.zeros((240, 320, 3), np.uint8)
+    base[:] = (60, 70, 80)
+    cv2.rectangle(base, (0, 170), (320, 240), (30, 30, 35), -1)  # dashboard
+    cv2.rectangle(base, (250, 20), (310, 90), (200, 200, 200), -1)  # window
+    jd, fired = JoltDetector(), []
+    for i in range(60):
+        f = base.copy()
+        cv2.circle(f, (150 + int(5 * np.sin(i / 3)), 100), 50, (150, 160, 200), -1)  # head moving normally
+        if i == 45:
+            f = np.roll(np.roll(f, 70, axis=1), 40, axis=0)  # whole image shifts: camera shaken
+        fired.append(jd.update(i / 15, f))
+    assert fired[45] and sum(fired) <= 2  # the jolt frame (and possibly the frame after it)
+
+    # not jolts: lights change (tunnel), the face disappears, a hand covers the lens
+    jd = JoltDetector()
+    face = base.copy()
+    cv2.circle(face, (150, 100), 50, (150, 160, 200), -1)
+    seq = [face] * 20 + [(face * 0.4).astype(np.uint8)] * 5 + [base] * 5 + [np.full_like(base, 20)] * 5
+    assert not any(jd.update(i / 15, f) for i, f in enumerate(seq))
+
+
+def _mishap_run(responses, evidence_t=1.0, until=40.0, ack_at=None):
+    from dms.fusion.mishap import MishapDetector
+
+    md, events, t = MishapDetector(), [], 0.0
+    while t < until:
+        jolt = abs(t - evidence_t) < 1e-6
+        face, closed = responses(t)
+        md.update(t, jolt=jolt, audio_groups=None, face=face, eyes_closed=closed)
+        if ack_at is not None and abs(t - ack_at) < 1e-6:
+            md.acknowledge(t)
+        events += [k for _, k, _ in md.pop_events()]
+        t = round(t + 0.1, 1)
+    return events
+
+
+def test_mishap_driver_ok_after_impact():
+    assert _mishap_run(lambda t: (True, False)) == ["impact"]
+
+
+def test_mishap_unresponsive_leads_to_sos_unless_acknowledged():
+    gone = lambda t: (t < 1.0, False)  # face disappears right after the jolt
+    assert _mishap_run(gone) == ["possible_accident", "sos"]
+    assert _mishap_run(gone, ack_at=10.0) == ["possible_accident", "driver_ok"]
+
+
+def test_mishap_needs_evidence():
+    from dms.fusion.mishap import MishapDetector
+
+    md = MishapDetector()
+    for i in range(100):  # driver vanishes but nothing suggested an impact -> no accident alarm
+        md.update(i / 10, jolt=False, audio_groups={"impact": 0.1}, face=False, eyes_closed=False)
+    assert md.pop_events() == []
+
+
+def test_audio_alerts_and_mishap_alerts():
+    from dms.fusion.alerts import AlertManager
+    from dms.fusion.risk import RiskOutput
+
+    am, risk = AlertManager(), RiskOutput(0, "OK", 0, 0, 0)
+    kw = dict(risk=risk, microsleep=False, closed_duration=0, long_distraction=False, vats=False, off_road_duration=0,
+              yawns_5min=0, face=True, alertness=None, emotion_probs_affect=0.0, behaviours={})
+    kinds = [a.kind for i in range(30) for a in am.update(i * 0.1, **kw, audio_groups={"snoring": 0.9, "siren": 0.8})]
+    assert "snoring" in kinds and "siren" in kinds
+    a = am.update(5.0, **kw, mishap_events=[(5.0, "possible_accident", "camera jolt")])
+    assert a[0].kind == "possible_accident" and a[0].severity == "critical"
+
+
+def test_eye_cnn_fusion():
+    tr = EyeClosureTracker()
+    tr.update(0.0, 0.30, PROF, p_closed=0.9)  # geometry says open, confident CNN says closed
+    assert tr.last_closed
+    tr.update(0.1, 0.05, PROF, p_closed=0.1)  # geometry says closed, confident CNN says open (e.g. looking down)
+    assert not tr.last_closed
+    tr.update(0.2, 0.05, PROF, p_closed=0.5)  # CNN unsure -> geometry decides
+    assert tr.last_closed
+
+
+def test_risk_uses_audio():
+    rf = RiskFusion()
+    out = rf.update(0.0, RiskInputs(audio_groups={"snoring": 0.95}))
+    assert out.drowsiness > 0.5 and any("snoring" in r for r in out.reasons)
+
+
+# ---------------------------------------------------------------- offline store / security
+def test_event_store_offline_then_sync(tmp_path):
+    import http.server
+    import threading
+
+    from dms.storage import EventStore, Syncer
+
+    store = EventStore(tmp_path / "ev.db")
+    sid = store.new_session()
+    store.add_event(sid, "microsleep", "critical", t_session=9.0, detail="eyes closed 1.0s")
+    store.save_trip(sid, {"safety_score": 80})
+    assert store.counts()["events_unsynced"] == 1 and store.counts()["trips_unsynced"] == 1
+
+    received = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            assert self.headers["Authorization"] == "Bearer secret"
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    sync = Syncer(store, f"http://127.0.0.1:{port}/upload", "secret")
+    srv.server_close()  # "offline": nothing listening yet
+    with pytest.raises(Exception):
+        sync.sync_once()
+    assert store.counts()["events_unsynced"] == 1  # data kept while offline
+
+    srv = http.server.HTTPServer(("127.0.0.1", port), H)  # back online
+    threading.Thread(target=srv.handle_request, daemon=True).start()
+    assert sync.sync_once() == 2
+    srv.server_close()
+    assert received[0]["events"][0]["kind"] == "microsleep" and received[0]["trips"][0]["summary"]["safety_score"] == 80
+    assert store.counts()["events_unsynced"] == 0
+    with pytest.raises(ValueError):
+        Syncer(store, "http://example.com/upload")  # plain http to a remote host is refused
+
+
+def test_security_rules(tmp_path):
+    from dms import security
+
+    assert security.stream_url_allowed("rtsp://192.168.1.254/live")[0]
+    assert security.stream_url_allowed("http://10.0.0.5:8080/video")[0]
+    assert security.stream_url_allowed("0")[0]
+    assert not security.stream_url_allowed("/etc/passwd")[0]
+    assert not security.stream_url_allowed("file:///Users/me/private.mov")[0]
+    assert not security.stream_url_allowed("ftp://x/y")[0]
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"x")
+    assert security.stream_url_allowed(str(f), allow_files=True)[0]
+    # cross-site WebSocket hijacking and DNS rebinding
+    assert security.origin_allowed("http://localhost:8000", "localhost:8000")
+    assert not security.origin_allowed("https://evil.example", "localhost:8000")
+    assert security.host_allowed("localhost:8000", "127.0.0.1")
+    assert not security.host_allowed("evil.example:8000", "127.0.0.1")
+    assert security.host_allowed("192.168.1.5:8000", "0.0.0.0")
+    assert security.token_ok(None, None) and security.token_ok("abc", "abc") and not security.token_ok("abc", "abd")
+    # model integrity
+    m = tmp_path / "model.onnx"
+    m.write_bytes(b"weights")
+    security.write_sums([m], tmp_path / "SHA256SUMS")
+    assert security.verify_weights(tmp_path / "SHA256SUMS") == []
+    m.write_bytes(b"tampered")
+    assert security.verify_weights(tmp_path / "SHA256SUMS")
+    assert security.verify_weights() == []  # the shipped models match their checksums
+
+
+def test_web_server_security_end_to_end():
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from dms.web import server
+
+    server.CFG.update(token=None, bind_host="127.0.0.1", allow_files=False, origins=set(), audio=False, mishap=False, models_info={})
+    c = TestClient(server.app, base_url="http://localhost:8000")
+    r = c.get("/")
+    assert r.status_code == 200 and "Content-Security-Policy" in r.headers and r.headers["X-Frame-Options"] == "DENY"
+    assert c.get("/", headers={"host": "evil.example:8000"}).status_code == 421  # DNS rebinding
+    with pytest.raises(WebSocketDisconnect):  # another website trying to use the camera socket
+        with c.websocket_connect("ws://localhost:8000/ws", headers={"origin": "https://evil.example"}) as ws:
+            ws.receive_text()
+    with c.websocket_connect("ws://localhost:8000/ws", headers={"origin": "http://localhost:8000"}) as ws:
+        assert json.loads(ws.receive_text())["type"] == "ready"
+        ws.send_text(json.dumps({"type": "stream_start", "url": "/etc/passwd"}))
+        msg = json.loads(ws.receive_text())
+        assert msg["type"] == "error" and "allowed" in msg["message"]
+
+    server.CFG.update(token="s3cret", bind_host="0.0.0.0")
+    c = TestClient(server.app, base_url="http://192.168.1.5:8000")
+    assert c.get("/").status_code == 401
+    assert c.get("/api/info").status_code == 401
+    r = c.get("/?token=s3cret")
+    assert r.status_code == 200 and "httponly" in r.headers["set-cookie"].lower()
+    assert c.get("/api/info").status_code == 200  # cookie now authorises the browser
+    server.CFG.update(token=None, bind_host="127.0.0.1")
+
+
+def test_temperature_scaling_fixes_overconfidence():
+    from dms.training.metrics import expected_calibration_error
+    from dms.training.train_image import fit_temperature
+
+    g = torch.Generator().manual_seed(0)
+    y = torch.randint(0, 3, (3000,), generator=g)
+    # an overconfident model: right 70% of the time but ~100% sure
+    pred = torch.where(torch.rand(3000, generator=g) < 0.7, y, (y + 1) % 3)
+    logits = torch.nn.functional.one_hot(pred, 3).float() * 12
+    T = fit_temperature(logits, y)
+    before = expected_calibration_error(torch.softmax(logits, -1).numpy(), y.numpy())
+    after = expected_calibration_error(torch.softmax(logits / T, -1).numpy(), y.numpy())
+    assert T > 2 and after < before / 3
+    assert (torch.softmax(logits / T, -1).argmax(1) == pred).all()  # predictions unchanged

@@ -23,10 +23,12 @@ from .data.transforms import to_batch
 from .features.geometry import LEFT_EYE, RIGHT_EYE, FrameFeatures, compute_features
 from .features.temporal import Calibrator, DriverProfile, EyeClosureTracker, FeatureSequence, GlanceTracker, YawnTracker
 from .fusion.alerts import Alert, AlertManager
+from .fusion.mishap import JoltDetector, MishapDetector, MishapState
 from .fusion.risk import RiskFusion, RiskInputs, RiskOutput
 from .models import checkpoint
 from .models.networks import ALERTNESS_CLASSES, CABIN_CLASSES, EMOTION_CLASSES
-from .perception.emotion import load_emotion
+from .perception.emotion import HSE_PATH, HSEmotionONNX, TorchEmotion
+from .perception.eyes import EyeStateCNN
 from .perception.face import FaceLandmarker, FaceObservation, bbox_from_points, crop
 from .perception.objects import WEIGHTS as YOLO_WEIGHTS, Detection, behaviour_scores
 from .report import SessionRecorder
@@ -40,7 +42,10 @@ class MonitorConfig:
     temporal_ckpt: str | None = None
     profile: str | None = None  # load a saved DriverProfile and skip calibration
     calib_seconds: float = 10.0
-    emotion: bool = True  # trained face_ckpt if given, else pretrained HSEmotion
+    emotion: bool = True
+    emotion_source: str = "pretrained"  # "pretrained" (HSEmotion/AffectNet) or "trained" (emotion head of face_ckpt)
+    eye_cnn: bool = True  # use the eye head of face_ckpt together with EAR
+    eye_hz: float = 15.0
     objects: bool = True  # YOLO phone / drink / smoking detection
     yolo_weights: str | None = None
     object_hz: float = 4.0
@@ -50,6 +55,8 @@ class MonitorConfig:
     seq_len: int = 300  # 30 s at 10 Hz
     seq_rate_hz: float = 10.0
     threads: int = 2
+    audio: bool = False  # YAMNet cabin-audio events (needs audio pushed via push_audio)
+    mishap: bool = False  # possible-accident detection (camera jolt and/or crash sounds)
 
 
 @dataclass
@@ -69,12 +76,16 @@ class FrameResult:
     off_road_duration: float = 0.0
     eye_closed_duration: float = 0.0
     eye_openness: float | None = None
+    eye_cnn_closed: float | None = None  # eye-state CNN probability (if a face checkpoint is loaded)
+    eye_closed: bool = False  # fused decision used by the trackers
     cabin: str | None = None
     cabin_conf: float = 0.0
     alertness: str | None = None
     perclos: float = 0.0
     blink_rate: float = 0.0
     yawns: int = 0
+    audio: dict | None = None  # latest AudioState.as_dict()
+    mishap: MishapState | None = None
     fps: float = 0.0
     obs: FaceObservation | None = field(default=None, repr=False)
 
@@ -121,7 +132,22 @@ class DriverMonitor:
         self.cfg = cfg = cfg or MonitorConfig()
         torch.set_num_threads(cfg.threads)
         self.landmarker = FaceLandmarker(cfg.landmarker) if cfg.landmarker else FaceLandmarker()
-        self.emotion_model = load_emotion(cfg.face_ckpt) if cfg.emotion else None
+        self.face_net, face_ck = checkpoint.load(cfg.face_ckpt) if cfg.face_ckpt else (None, None)
+        if self.face_net is not None:
+            self.face_net.eval()
+        size = (face_ck or {}).get("img_size", 224)
+        backbone = (face_ck or {}).get("arch", {}).get("backbone")
+        eye_t = float(((face_ck or {}).get("temperature") or {}).get("eye", 1.0))
+        self.eye_model = EyeStateCNN(self.face_net, size, f"FaceStateNet eye head ({backbone}, trained)", eye_t) \
+            if self.face_net is not None and cfg.eye_cnn and "eye" in self.face_net.heads else None
+        self.emotion_model = None
+        if cfg.emotion:
+            if cfg.emotion_source == "trained" and self.face_net is not None:
+                self.emotion_model = TorchEmotion(model=self.face_net, ck=face_ck)
+            elif HSE_PATH.exists():
+                self.emotion_model = HSEmotionONNX()
+            elif self.face_net is not None:
+                self.emotion_model = TorchEmotion(model=self.face_net, ck=face_ck)
         self.object_model = self._load_yolo(cfg) if cfg.objects else None
         self.cabin_model = self._load(cfg.cabin_ckpt)
         self.temporal_model = self._load(cfg.temporal_ckpt)
@@ -136,10 +162,33 @@ class DriverMonitor:
         self.alerter = AlertManager()
         self.recorder = SessionRecorder()
         self._thr_face, self._thr_cabin, self._thr_temp = _Throttle(cfg.face_hz), _Throttle(cfg.cabin_hz), _Throttle(cfg.temporal_hz)
-        self._thr_obj = _Throttle(cfg.object_hz)
+        self._thr_obj, self._thr_eye = _Throttle(cfg.object_hz), _Throttle(cfg.eye_hz)
+        self._eye_p: float | None = None
         self._emotion_p = self._cabin_p = self._alert_p = None
         self._dets: list[Detection] = []
         self._last_t, self._fps = None, 0.0
+        self.audio_monitor = None  # created on first push_audio (loads YAMNet)
+        self._audio = None
+        self.jolt = JoltDetector()
+        self.mishap = MishapDetector() if cfg.mishap else None
+
+    def push_audio(self, t: float, pcm: np.ndarray):
+        """Feed 16 kHz mono float PCM. Returns the new AudioState when a window was classified."""
+        if not self.cfg.audio:
+            return None
+        if self.audio_monitor is None:
+            from .perception.audio import AudioMonitor
+
+            self.audio_monitor = AudioMonitor()
+        st = self.audio_monitor.push(t, pcm)
+        if st is not None:
+            self._audio = st
+        return st
+
+    def acknowledge(self, t: float):
+        """Driver confirmed they are OK: cancels a pending accident countdown."""
+        if self.mishap is not None:
+            self.mishap.acknowledge(t)
 
     @staticmethod
     def _load_yolo(cfg):
@@ -155,9 +204,12 @@ class DriverMonitor:
         return {
             "landmarks": "MediaPipe Face Landmarker (478 pts, 52 blendshapes)",
             "emotion": getattr(self.emotion_model, "name", None),
+            "eye": self.eye_model.name if self.eye_model else "geometric eye aspect ratio (no eye CNN loaded)",
             "objects": getattr(self.object_model, "name", None),
             "cabin": "CabinNet (trained)" if self.cabin_model is not None else None,
             "temporal": "Conv-Transformer (trained)" if self.temporal_model is not None else None,
+            "audio": "YAMNet (MediaPipe, 521 sound classes)" if self.cfg.audio else None,
+            "mishap": "camera jolt + crash/skid sound + responsiveness check" if self.cfg.mishap else None,
         }
 
     def reset(self, keep_profile: bool = False):
@@ -170,8 +222,13 @@ class DriverMonitor:
         self.fusion, self.alerter = RiskFusion(), AlertManager()
         self.recorder.reset()
         self._emotion_p = self._cabin_p = self._alert_p = None
+        self._eye_p = None
         self._dets = []
         self._last_t = None
+        self._audio = None
+        self.jolt.reset()
+        if self.mishap is not None:
+            self.mishap = MishapDetector()
         # MediaPipe VIDEO mode needs increasing timestamps; keep its clock offset.
         self._t_offset = self.landmarker._last_ms / 1000.0 + 1.0
 
@@ -197,8 +254,14 @@ class DriverMonitor:
         obs = self.landmarker.detect(frame, t + getattr(self, "_t_offset", 0.0))
         feats = compute_features(obs.landmarks, obs.transform, obs.blendshapes) if obs else FrameFeatures(face=False)
         face_box = bbox_from_points(obs.landmarks, frame.shape, 0.1) if obs else None
+        jolt = self.jolt.update(t, frame) if self.mishap is not None else False
+        audio_groups = self._audio.groups if (self._audio is not None and t - self._audio.t < 2.0) else None
 
         # --- learned per-frame models (throttled) -----------------------------
+        if obs is None:
+            self._eye_p = None
+        elif self.eye_model is not None and self._thr_eye.ready(t):
+            self._eye_p = self.eye_model(frame, obs.landmarks)
         if obs is None:
             self._emotion_p = None
         elif self.emotion_model is not None and self._thr_face.ready(t):
@@ -214,7 +277,8 @@ class DriverMonitor:
         behaviours = behaviour_scores(self._dets, face_box, frame.shape)
 
         res = FrameResult(t=t, calibrating=None, features=feats, risk=None, obs=obs, fps=self._fps,
-                          detections=self._dets, behaviours=behaviours, face_box=face_box)
+                          detections=self._dets, behaviours=behaviours, face_box=face_box,
+                          audio=self._audio.as_dict() if self._audio is not None else None)
         if self._emotion_p is not None:
             k = int(np.argmax(self._emotion_p))
             res.emotion, res.emotion_conf, res.emotion_probs = EMOTION_CLASSES[k], float(self._emotion_p[k]), self._emotion_p
@@ -232,7 +296,7 @@ class DriverMonitor:
 
         # --- temporal indicators ----------------------------------------------
         if feats.face:
-            self.eyes.update(t, feats.ear, prof)
+            self.eyes.update(t, feats.ear, prof, self._eye_p)
             self.yawn.update(t, feats.mar, feats.jaw_open_bs)
             self.seq.update(t, feats.vector(), prof)
         g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=feats.face)
@@ -261,23 +325,32 @@ class DriverMonitor:
                 cabin_probs=self._cabin_p,
                 emotion_probs=self._emotion_p,
                 behaviours=behaviours,
+                audio_groups=audio_groups,
             ),
         )
         res.off_road, res.off_road_duration = g.off_road, g.off_road_duration
+        res.eye_cnn_closed, res.eye_closed = self._eye_p, bool(feats.face and self.eyes.last_closed)
         res.eye_closed_duration = self.eyes.closed_duration
         if feats.face and not np.isnan(feats.ear):
             res.eye_openness = self.eyes.openness(feats.ear, prof)
+        mishap_events = []
+        if self.mishap is not None:
+            res.mishap = self.mishap.update(t, jolt=jolt, audio_groups=audio_groups, face=feats.face,
+                                           eyes_closed=bool(feats.face and self.eyes.last_closed))
+            mishap_events = self.mishap.pop_events()
         res.alerts = self.alerter.update(
             t, risk=res.risk, microsleep=self.eyes.in_microsleep, closed_duration=self.eyes.closed_duration,
             long_distraction=g.long_distraction, vats=g.vats_distraction, off_road_duration=g.off_road_duration,
             yawns_5min=res.yawns, face=feats.face, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
-            behaviours=behaviours,
+            behaviours=behaviours, audio_groups=audio_groups, mishap_events=mishap_events,
         )
         self.recorder.update(res, res.alerts, behaviours, g.off_road_duration, self.eyes.closed_duration)
         return res
 
     def close(self):
         self.landmarker.close()
+        if self.audio_monitor is not None:
+            self.audio_monitor.close()
 
 
 # --------------------------------------------------------------------------- #

@@ -26,7 +26,14 @@ function connect() {
       return;
     }
     const m = JSON.parse(ev.data);
-    if (m.type === "ready") { S.ready = true; setConn("connected", true); fillModels(m.models); }
+    if (m.type === "ready") {
+      S.ready = true; setConn("connected", true); fillModels(m.models);
+      S.features = m.features || {};
+      $("opt-audio-wrap").classList.toggle("hidden", !S.features.audio);
+      $("audio-card").classList.toggle("hidden", !S.features.audio);
+    }
+    else if (m.type === "audio") onAudio(m);
+    else if (m.type === "status") { $("src-label").textContent = m.message; }
     else if (m.type === "result") onResult(m);
     else if (m.type === "report") showReport(m);
     else if (m.type === "stream_ended") { if (S.running && S.src === "stream") stop(true); }
@@ -79,7 +86,87 @@ function onResult(r) {
     drawChart($("chart"), S.hist, 60);
   }
   for (const a of r.alerts || []) onAlert(a);
+  if (r.mishap) onMishap(r.mishap);
 }
+
+// ---------------------------------------------------------------- possible accident
+function onMishap(m) {
+  const box = $("sos");
+  if (m.phase === "possible_accident") {
+    box.classList.remove("hidden");
+    $("sos-title").textContent = "Possible accident!";
+    $("sos-sub").textContent = `Are you OK? (${m.evidence})`;
+    $("sos-count").textContent = Math.ceil(m.countdown);
+    $("sos-note").textContent = "If nobody responds, your emergency contact will be alerted.";
+    $("sos-ok").textContent = "I'm OK";
+  } else if (m.phase === "sos") {
+    box.classList.remove("hidden");
+    $("sos-title").textContent = "Emergency SOS raised";
+    $("sos-sub").textContent = m.evidence;
+    $("sos-count").textContent = "SOS";
+    $("sos-note").textContent = "Logged locally. In the vehicle app this calls/messages your emergency contact with your location.";
+    $("sos-ok").textContent = "Dismiss";
+  } else if (!box.classList.contains("hidden") && (m.phase === "idle" || m.phase === "cleared")) {
+    box.classList.add("hidden");
+  }
+}
+$("sos-ok").onclick = () => { send({ type: "ack", t: S.lastT }); $("sos").classList.add("hidden"); };
+
+// ---------------------------------------------------------------- audio (opt-in; analysed in memory, never recorded)
+const AUDIO_GROUPS = { snoring: "snoring", distress: "shouting", impact: "crash", skid: "skid", horn: "horn", siren: "siren", phone: "phone ring", baby: "baby crying" };
+function onAudio(m) {
+  const lvl = Math.max(0, Math.min(1, (m.rms_db + 60) / 60));
+  $("b-audio").style.width = (lvl * 100).toFixed(0) + "%";
+  $("v-audio").textContent = m.rms_db.toFixed(0) + " dB";
+  $("audio-state").textContent = "listening";
+  $("audio-groups").innerHTML = Object.entries(AUDIO_GROUPS).map(([k, label]) => {
+    const v = (m.groups || {})[k] || 0;
+    const cls = v >= 0.5 ? (["snoring", "impact", "skid"].includes(k) ? "chip on bad" : "chip on") : "chip";
+    return `<span class="${cls}" title="${(v * 100).toFixed(0)}%">${label}</span>`;
+  }).join("");
+  $("audio-top").textContent = (m.top || []).map(([n, p]) => `${n} ${(p * 100).toFixed(0)}%`).join(" · ");
+}
+const A = { ctx: null, node: null, mic: null, mediaSrc: null, buf: [], n: 0 };
+async function startAudio() {
+  if (!S.features || !S.features.audio || !$("opt-audio").checked || A.node) return;
+  try {
+    if (!A.ctx) {
+      A.ctx = new AudioContext({ sampleRate: 16000 });
+      await A.ctx.audioWorklet.addModule("/static/audio-worklet.js");
+    }
+    await A.ctx.resume();
+    let src;
+    if (S.src === "file") {
+      if (!A.mediaSrc) { A.mediaSrc = A.ctx.createMediaElementSource(video); A.mediaSrc.connect(A.ctx.destination); }
+      src = A.mediaSrc;
+    } else if (S.src === "webcam") {
+      A.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false } });
+      src = A.ctx.createMediaStreamSource(A.mic);
+    } else return; // network streams: audio not supported yet
+    A.node = new AudioWorkletNode(A.ctx, "forwarder");
+    A.node.port.onmessage = (e) => sendAudio(e.data);
+    src.connect(A.node);
+    A.src = src;
+    $("audio-state").textContent = "listening";
+  } catch (e) {
+    $("audio-state").textContent = "unavailable: " + e.message;
+  }
+}
+function stopAudio() {
+  if (A.node) { try { A.src.disconnect(A.node); } catch (e) { /* already disconnected */ } A.node.port.onmessage = null; A.node = null; }
+  if (A.mic) { A.mic.getTracks().forEach((t) => t.stop()); A.mic = null; }
+  $("audio-state").textContent = "off";
+}
+function sendAudio(chunk) {
+  if (!S.running || !S.ws || S.ws.readyState !== 1) return;
+  const t = S.src === "file" ? video.currentTime : (performance.now() - S.t0) / 1000;
+  const buf = new ArrayBuffer(12 + chunk.length * 4);
+  new Uint8Array(buf, 0, 4).set([65, 85, 68, 48]); // "AUD0"
+  new DataView(buf).setFloat64(4, t, true);
+  new Float32Array(buf, 12).set(chunk);
+  S.ws.send(buf);
+}
+$("opt-audio").onchange = (e) => { if (S.running) (e.target.checked ? startAudio() : stopAudio()); };
 
 function drawOverlay(img, r) {
   ai.width = r.w; ai.height = r.h;
@@ -92,7 +179,7 @@ function drawOverlay(img, r) {
     g.strokeStyle = col; g.lineWidth = lw; g.strokeRect(x0, y0, x1 - x0, y1 - y0);
   }
   if (r.eyes) {
-    const closed = r.eye_openness != null && r.eye_openness < 0.2;
+    const closed = !!r.eye_closed;
     g.strokeStyle = closed ? "#f85149" : "#3fb950"; g.lineWidth = lw;
     for (const eye of r.eyes) poly(g, eye);
   }
@@ -148,9 +235,10 @@ function updateStats(r) {
   const f = r.features;
   if (!r.face) { setText("s-eyes", "no face", "v warn"); $("s-eyes-sub").textContent = ""; }
   else if (r.eye_openness != null) {
-    const closed = r.eye_openness < 0.2;
+    const closed = !!r.eye_closed;
     setText("s-eyes", closed ? "CLOSED" : "open", closed ? "v bad" : "v good");
-    $("s-eyes-sub").textContent = `openness ${(r.eye_openness * 100).toFixed(0)}% · EAR ${f.ear?.toFixed(3)}`;
+    $("s-eyes-sub").textContent = `openness ${(r.eye_openness * 100).toFixed(0)}% · EAR ${f.ear?.toFixed(3)}` +
+      (r.eye_cnn_closed != null ? ` · CNN closed ${(r.eye_cnn_closed * 100).toFixed(0)}%` : "");
   } else { setText("s-eyes", "…", "v"); $("s-eyes-sub").textContent = f.ear != null ? `EAR ${f.ear.toFixed(3)}` : ""; }
   const pc = (r.perclos || 0) * 100;
   setText("s-perclos", pc.toFixed(1) + "%", pc >= 15 ? "v bad" : pc >= 8 ? "v warn" : "v good");
@@ -320,6 +408,7 @@ async function start() {
   S.running = true;
   $("start").textContent = "Stop"; $("start").className = "btn danger";
   startLoop();
+  startAudio();
 }
 function stop(showRep) {
   S.running = false;
@@ -327,6 +416,8 @@ function stop(showRep) {
   if (S.src === "file") video.pause();
   if (S.src === "stream") send({ type: "stream_stop" });
   if ("speechSynthesis" in window) speechSynthesis.cancel();
+  stopAudio();
+  $("sos").classList.add("hidden");
   $("start").textContent = "Start"; $("start").className = "btn primary";
   if (showRep) send({ type: "report" });
 }
@@ -335,6 +426,7 @@ function stop(showRep) {
 $("start").onclick = () => (S.running ? stop(true) : start());
 $("recal").onclick = () => { send({ type: "recalibrate" }); S.hist = []; };
 $("report-btn").onclick = () => send({ type: "report" });
+$("print-btn").onclick = () => window.print();
 $("report-close").onclick = () => $("report").classList.add("hidden");
 $("dl-json").onclick = () => S.report && download("trip_report.json", JSON.stringify(S.report, null, 2), "application/json");
 $("dl-csv").onclick = () => {
@@ -361,7 +453,7 @@ $("file-input").onchange = (e) => {
   $("placeholder").classList.add("hidden");
 };
 video.addEventListener("ended", () => { if (S.running && S.src === "file") stop(true); });
-video.addEventListener("play", () => { if (S.src === "file" && !S.running && S.fileURL && S.ready) { S.running = true; $("start").textContent = "Stop"; $("start").className = "btn danger"; ensureAudio(); send({ type: "recalibrate" }); startLoop(); } });
+video.addEventListener("play", () => { if (S.src === "file" && !S.running && S.fileURL && S.ready) { S.running = true; $("start").textContent = "Stop"; $("start").className = "btn danger"; ensureAudio(); send({ type: "recalibrate" }); startLoop(); startAudio(); } });
 document.querySelectorAll(".tab").forEach((b) => (b.onclick = () => {
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === b));
   document.querySelectorAll(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + b.dataset.tab));
@@ -370,7 +462,7 @@ document.querySelectorAll(".tab").forEach((b) => (b.onclick = () => {
 window.addEventListener("resize", () => drawChart($("chart"), S.hist, 60));
 
 function fillModels(models) {
-  const rows = [["Face landmarks", models.landmarks], ["Emotion", models.emotion], ["Phone / objects", models.objects],
+  const rows = [["Face landmarks", models.landmarks], ["Eye state", models.eye], ["Emotion", models.emotion], ["Phone / objects", models.objects],
     ["Behaviour classifier", models.cabin], ["Temporal drowsiness", models.temporal]];
   $("models-table").innerHTML = "<tr><th>Component</th><th>Model</th></tr>" + rows.map(([k, v]) =>
     `<tr><td>${k}</td><td>${v ? esc(v) : '<span class="muted">not loaded (train it, then pass the checkpoint)</span>'}</td></tr>`).join("");

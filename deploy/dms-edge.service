@@ -1,0 +1,27 @@
+# systemd unit for an in-car Linux box (Raspberry Pi 5 / Jetson / mini PC) that starts with the car.
+# Install:  sudo cp deploy/dms-edge.service /etc/systemd/system/ && sudo systemctl enable --now dms-edge
+# Logs:     journalctl -u dms-edge -f
+[Unit]
+Description=Driver monitoring (headless, offline-first)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+User=dms
+WorkingDirectory=/opt/dms
+# Camera: a USB IR camera (--source 0) or the dash cam's RTSP stream. The app reconnects by itself if it drops.
+ExecStart=/opt/dms/.venv/bin/python -m dms.app.run --source rtsp://192.168.1.254/live --headless --speak --mishap \
+          --store /var/lib/dms/events.db --calib-seconds 15
+Restart=always
+RestartSec=3
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/dms
+StateDirectory=dms
+SupplementaryGroups=video audio
+
+[Install]
+WantedBy=multi-user.target

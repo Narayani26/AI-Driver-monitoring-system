@@ -55,7 +55,55 @@ def get_args(argv=None):
     ap.add_argument("--max-steps", type=int, default=0, help="debug: stop each epoch after N steps")
     ap.add_argument("--init-ckpt", help="fine-tune: start from this checkpoint (e.g. a model trained on public data)")
     ap.add_argument("--freeze-epochs", type=int, default=0, help="fine-tune: train only the heads for the first N epochs")
+    ap.add_argument("--tta", action="store_true", help="test-time augmentation: average with the mirrored image (face tasks)")
+    ap.add_argument("--no-calibrate", action="store_true", help="skip temperature scaling on the validation set")
     return ap.parse_args(argv)
+
+
+@torch.no_grad()
+def collect_logits(model, loader, tasks, device, kind, tta: bool = False) -> dict:
+    """Per-task (logits, labels). tta=True averages with the horizontally flipped image
+    (face tasks only: flipping a cabin image would swap left/right-hand classes)."""
+    model.eval()
+    ys = {t: [] for t in tasks}
+    zs = {t: [] for t in tasks}
+    for x, y in loader:
+        x = x.to(device, non_blocking=True)
+        out = model(x)
+        out = out if kind == "face" else {"cabin": out}
+        if tta and kind == "face":
+            flipped = model(torch.flip(x, dims=[3]))
+            out = {t: (out[t] + flipped[t]) / 2 for t in out}
+        for t in tasks:
+            m = y[t] >= 0
+            if m.any():
+                zs[t].append(out[t].float()[m.to(device)].cpu())
+                ys[t].append(y[t][m])
+    return {t: (torch.cat(zs[t]), torch.cat(ys[t])) for t in tasks if ys[t]}
+
+
+def fit_temperature(logits: torch.Tensor, y: torch.Tensor) -> float:
+    """Temperature scaling (Guo et al., ICML 2017): one scalar T that minimises the
+    validation NLL of softmax(logits / T). Changes confidence, never the predicted class."""
+    log_t = torch.zeros(1, requires_grad=True)
+    opt = torch.optim.LBFGS([log_t], lr=0.1, max_iter=200)
+
+    def step():
+        opt.zero_grad()
+        loss = torch.nn.functional.cross_entropy(logits / log_t.exp(), y)
+        loss.backward()
+        return loss
+
+    opt.step(step)
+    return float(log_t.detach().exp().clamp(0.05, 20.0))
+
+
+def metrics_from_logits(zy: dict, temps: dict | None = None) -> dict:
+    out = {}
+    for t, (z, y) in zy.items():
+        T = (temps or {}).get(t, 1.0)
+        out[t] = classification_metrics(y.numpy(), torch.softmax(z / T, -1).numpy(), CLASSES[t])
+    return out
 
 
 @torch.no_grad()
@@ -181,16 +229,27 @@ def main(argv=None):
             checkpoint.save(out / "best.pt", model, a.kind, arch, epoch=ep, val=val, img_size=a.img_size)
         checkpoint.save(out / "last.pt", model, a.kind, arch, epoch=ep)
 
-    model, _ = checkpoint.load(out / "best.pt")
+    model, best_ck = checkpoint.load(out / "best.pt")
     model.to(device)
-    test = evaluate(model, te_dl, present, device, a.kind)
+    temps = {}
+    if not a.no_calibrate:
+        val_z = collect_logits(model, va_dl, present, device, a.kind, a.tta)
+        temps = {t: fit_temperature(z, y) for t, (z, y) in val_z.items()}
+        print("temperature scaling:", {t: round(v, 3) for t, v in temps.items()})
+        extra = {k: v for k, v in best_ck.items() if k not in ("kind", "arch", "state_dict")}
+        checkpoint.save(out / "best.pt", model, a.kind, best_ck["arch"], **{**extra, "temperature": temps, "tta": a.tta})
+    test_z = collect_logits(model, te_dl, present, device, a.kind, a.tta)
+    test = metrics_from_logits(test_z, temps)
+    raw = metrics_from_logits(test_z)
     for t, m in test.items():
+        m["ece_uncalibrated"] = raw[t]["ece"]
         plot_confusion(m["confusion"], CLASSES[t], out / f"confusion_{t}.png", f"{t} (test, {'subject-independent' if a.split == 'subject' else 'RANDOM split'})")
-        print(f"TEST {t}: acc={m['accuracy']:.4f} macroF1={m['macro_f1']:.4f} balAcc={m['balanced_accuracy']:.4f} ECE={m['ece']:.4f}")
-    result = {"args": vars(a), "history": history, "test": test}
+        print(f"TEST {t}: acc={m['accuracy']:.4f} macroF1={m['macro_f1']:.4f} balAcc={m['balanced_accuracy']:.4f} "
+              f"ECE={m['ece']:.4f} (before calibration {m['ece_uncalibrated']:.4f})")
+    result = {"args": vars(a), "history": history, "test": test, "temperature": temps}
     if held_dl is not None:
         held_present = tuple(t for t in present if (held_df[t] >= 0).any())
-        result["test_heldout"] = heldout = evaluate(model, held_dl, held_present, device, a.kind)
+        result["test_heldout"] = heldout = metrics_from_logits(collect_logits(model, held_dl, held_present, device, a.kind, a.tta), temps)
         for t, m in heldout.items():
             plot_confusion(m["confusion"], CLASSES[t], out / f"confusion_{t}_heldout.png", f"{t} (held-out dataset, never trained on)")
             print(f"HELD-OUT {t}: acc={m['accuracy']:.4f} macroF1={m['macro_f1']:.4f} (n={m['n']}, sources: {sorted(held_df.source.unique())})")

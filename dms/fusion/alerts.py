@@ -24,6 +24,16 @@ MESSAGES = {
     "no_seatbelt": ("warning", "chime", "Please fasten your seatbelt.", "Seatbelts reduce the risk of death in a crash by about half."),
     "stress": ("caution", "soft", "You seem stressed.", "Take a slow, deep breath. Reduce speed and keep a safe distance."),
     "no_driver": ("caution", "soft", "Driver not visible.", "Check that the camera can see your face."),
+    # audio (opt-in)
+    "snoring": ("critical", "alarm", "Wake up! Snoring detected.", "You may be falling asleep. Pull over safely now."),
+    "shouting": ("caution", "soft", "Raised voices detected.", "Stay calm and keep your focus on the road. The conversation can wait."),
+    "siren": ("info", "chime", "Emergency vehicle nearby.", "Slow down, check your mirrors and be ready to give way."),
+    "phone_ring": ("info", "soft", "Your phone is ringing.", "Let it go to voicemail, or answer hands-free."),
+    "baby": ("info", "soft", "A child is crying.", "Stop somewhere safe before attending to passengers."),
+    # possible accident (opt-in; needs audio and/or jolt evidence)
+    "impact": ("warning", "alarm", "Sudden impact detected. Are you OK?", "If you or the car are hurt, stop safely, switch on the hazard lights and call for help."),
+    "possible_accident": ("critical", "alarm", "Possible accident! Are you OK?", "Press I'm OK to cancel. Otherwise your emergency contact will be alerted."),
+    "sos": ("critical", "alarm", "Emergency SOS raised.", "SOS logged. In the vehicle app this notifies your emergency contact with your location."),
 }
 COOLDOWN_S = {"critical": 6.0, "warning": 15.0, "caution": 45.0, "info": 120.0}
 
@@ -48,6 +58,7 @@ class AlertManager:
         self.cooldowns = cooldowns or COOLDOWN_S
         self._last: dict[str, float] = {}
         self._active: dict[str, float] = {}  # kind -> since
+        self._hits: dict[str, list[float]] = {}  # audio detections per kind
 
     def _fire(self, kind: str, t: float, detail: str = "") -> Alert | None:
         sev, sound, msg, sug = self.messages[kind]
@@ -65,13 +76,26 @@ class AlertManager:
         since = self._active.setdefault(kind, t)
         return t - since >= hold
 
+    def _counted(self, key: str, hit: bool, t: float, need: int, window: float) -> bool:
+        """True when `hit` occurred at >= `need` distinct times within `window` seconds.
+        Callers pass the same audio state on every video frame, so a hit is only
+        counted again once the audio state changes (new 0.5 s window)."""
+        hist = self._hits.setdefault(key, [])
+        new = hit and (not hist or t - hist[-1] >= 0.4)
+        if new:
+            hist.append(t)
+        hist[:] = [x for x in hist if t - x <= window]
+        return new and len(hist) >= need  # only fire on a fresh detection
+
     def reset(self):
         self._last.clear()
         self._active.clear()
+        self._hits.clear()
 
     def update(self, t: float, *, risk, microsleep: bool, closed_duration: float, long_distraction: bool, vats: bool,
                off_road_duration: float, yawns_5min: int, face: bool, alertness: str | None, emotion_probs_affect: float,
-               behaviours: dict[str, float]) -> list[Alert]:
+               behaviours: dict[str, float], audio_groups: dict[str, float] | None = None,
+               mishap_events: list[tuple[float, str, str]] = ()) -> list[Alert]:
         out: list[Alert] = []
 
         def add(a):
@@ -96,5 +120,15 @@ class AlertManager:
             add(self._fire("stress", t))
         if self._sustained("no_driver", not face, t, 5.0):
             add(self._fire("no_driver", t))
+        a = audio_groups or {}
+        # Sounds are bursty (a snore, a siren's wail): count detections in a window instead of
+        # requiring a continuous hold. (kind, group, detections needed, window seconds)
+        for kind, group, need, window in (("snoring", "snoring", 2, 10.0), ("shouting", "distress", 2, 6.0), ("siren", "siren", 2, 10.0),
+                                          ("phone_ring", "phone", 2, 8.0), ("baby", "baby", 3, 10.0)):
+            if self._counted("audio_" + kind, a.get(group, 0.0) >= 0.5, t, need, window):
+                add(self._fire(kind, t, f"{a.get(group, 0.0):.0%}"))
+        for _, kind, evidence in mishap_events:
+            if kind in self.messages:
+                add(self._fire(kind, t, evidence))
         out.sort(key=lambda a: -SEVERITY[a.severity])
         return out

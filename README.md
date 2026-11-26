@@ -32,6 +32,13 @@ The browser shows **live footage on the left and the AI detection on the right**
 
 It works offline. Pretrained models are used until you train your own; add checkpoints with `--face-ckpt`, `--temporal-ckpt`, `--cabin-ckpt`, `--yolo`. Trained runs in `runs/` appear automatically in the **How it works** tab.
 
+**Optional features** (off by default):
+* `--audio`: cabin audio (YAMNet): snoring, shouting, sirens, phone ringing, crash/skid sounds; analysed in memory, never recorded.
+* `--mishap`: possible-accident detection: camera jolt or crash sound + unresponsive driver → "Are you OK?" countdown → SOS event.
+* `--face-ckpt runs/face/best.pt`: use your trained eye-state network (fused with eye geometry) and optionally `--emotion trained`.
+
+**Security and offline:** loopback-only by default, access token when exposed (`--host 0.0.0.0`), Origin/Host checks, model checksums, no footage stored, offline event store with store-and-forward sync (`--sync-url`). See [SECURITY.md](docs/SECURITY.md) and [PRODUCTION.md](docs/PRODUCTION.md).
+
 **Command-line / demo videos for slides**
 ```bash
 python -m dms.app.run --source 0                                                    # webcam window
@@ -43,7 +50,7 @@ python -m dms.app.run --source rtsp://192.168.1.254/live                        
 
 **Start here → [Complete guide: VS Code setup, testing, datasets, Kaggle, training, fine-tuning](docs/GUIDE.md)**
 
-**Docs:** [Research study](docs/RESEARCH.md) · [Datasets & download plan](docs/DATASETS.md) · [Mac vs Kaggle, dash cam & phone deployment](docs/DEPLOYMENT.md) · [Demo script](docs/DEMO.md)
+**Docs:** [Production & deployment](docs/PRODUCTION.md) · [Security](docs/SECURITY.md) · [Research study](docs/RESEARCH.md) · [Datasets & download plan](docs/DATASETS.md) · [Mac vs Kaggle, dash cam & phone deployment](docs/DEPLOYMENT.md) · [Demo script](docs/DEMO.md)
 
 ## Training
 
@@ -98,6 +105,10 @@ pytest
 | `dms/pipeline.py` | real-time orchestrator + overlay |
 | `dms/perception/emotion.py`, `objects.py` | emotion (trained or pretrained HSEmotion), YOLO phone/objects |
 | `dms/fusion/alerts.py` | spoken alerts + suggestions, debounce, cooldowns |
+| `dms/fusion/mishap.py` | possible-accident detection (jolt detector + responsiveness check + SOS countdown) |
+| `dms/perception/audio.py`, `eyes.py` | YAMNet cabin audio; trained eye-state CNN |
+| `dms/storage.py`, `dms/security.py` | offline event store + sync; security checks |
+| `Dockerfile`, `deploy/` | edge deployment (Docker, systemd) |
 | `dms/report.py` | trip report (summary, timeline, alerts) |
 | `dms/web/` | FastAPI server + side-by-side dashboard (no external JS) |
 | `dms/data/` | manifests, leakage-free splits, augmentations, video → feature sequences |
@@ -115,7 +126,10 @@ pytest
 |---|---|
 | Web demo: webcam / video upload / IP stream, side-by-side, voice + buzzer alerts with suggestions, trip report | ✅ verified in headless Chromium against a scripted test clip (alerts fire at the expected times) |
 | Real-time pipeline: landmarks, calibration, PERCLOS/blinks/microsleep/yawns, Euro NCAP-style distraction, YOLO phone, emotion, risk fusion | ✅ ~30 FPS on a 4-core CPU with emotion + YOLO |
-| Unit tests (20) + CI on GitHub Actions | ✅ passing |
+| Unit/integration tests (33) + CI on GitHub Actions | ✅ passing |
 | Training / evaluation / export code, fine-tuning (`--init-ckpt`), leakage study (`--split random`), held-out test sets, Kaggle notebook | ✅ verified on synthetic data and a mock Kaggle folder layout |
 | Our own trained weights & real-dataset results | ⏳ need datasets (docs/DATASETS.md) and Kaggle/Mac training (docs/DEPLOYMENT.md) |
-| Android app (dash cam → phone, locked screen) | 📐 designed (docs/DEPLOYMENT.md), not built |
+| Trained models (Kaggle): eye 97.9%, emotion 69.2%, behaviour 92.1% on unseen drivers; calibrated | ✅ |
+| Cabin audio, accident detection, offline store, security hardening | ✅ tested (unit, integration, real ESC-50 sounds, browser) |
+| Dockerfile / systemd unit | ✅ Docker image built + smoke-tested in CI (GitHub Actions); systemd unit written |
+| Android app (dash cam → phone, locked screen) | 📐 designed (docs/PRODUCTION.md), not built |

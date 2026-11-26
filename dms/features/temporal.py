@@ -104,6 +104,7 @@ class EyeClosureTracker:
         self._closed_since: float | None = None
         self.microsleep_events = 0
         self._in_microsleep = False
+        self.last_closed = False
 
     def openness(self, ear: float, profile: DriverProfile) -> float:
         # Map EAR to [0, 1] where 1 == the driver's normal open eye. A fully
@@ -111,10 +112,16 @@ class EyeClosureTracker:
         floor = 0.3 * profile.ear_open
         return float(np.clip((ear - floor) / max(profile.ear_open - floor, 1e-6), 0.0, 1.0))
 
-    def update(self, t: float, ear: float, profile: DriverProfile) -> None:
+    def update(self, t: float, ear: float, profile: DriverProfile, p_closed: float | None = None) -> None:
+        """`p_closed`: optional eye-state CNN probability. The CNN decides when it
+        is confident (> 0.7 closed, < 0.3 open); the geometric EAR test settles
+        the uncertain middle."""
         if np.isnan(ear):
             return
         closed = self.openness(ear, profile) < self.closed_frac
+        if p_closed is not None:
+            closed = p_closed > 0.7 or (p_closed >= 0.3 and closed)
+        self.last_closed = closed
         self._samples.append((t, closed))
         while self._samples and t - self._samples[0][0] > self.window_s:
             self._samples.popleft()

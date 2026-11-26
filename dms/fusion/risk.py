@@ -58,6 +58,7 @@ class RiskInputs:
     cabin_probs: np.ndarray | None = None  # from CabinNet
     emotion_probs: np.ndarray | None = None  # from FaceStateNet / HSEmotion
     behaviours: dict | None = None  # from YOLO: {"phone": conf, "smoking": conf, ...}
+    audio_groups: dict | None = None  # from YAMNet: {"snoring": p, "distress": p, ...}
 
 
 @dataclass
@@ -93,6 +94,9 @@ class RiskFusion:
             reasons.append(f"PERCLOS {r.perclos:.0%}")
         if r.yawns_5min >= 2:
             reasons.append(f"{r.yawns_5min} yawns in 5 min")
+        if r.audio_groups and r.audio_groups.get("snoring", 0.0) >= 0.5:
+            s = max(s, 0.9)
+            reasons.append("snoring sound")
         if r.alertness_probs is not None:
             p = r.alertness_probs
             model = float(p[ALERTNESS_CLASSES.index("low_vigilant")] * 0.5 + p[ALERTNESS_CLASSES.index("drowsy")])
@@ -124,10 +128,14 @@ class RiskFusion:
         return s
 
     def _affect(self, t: float, r: RiskInputs) -> float:
-        if r.emotion_probs is None:
+        if r.emotion_probs is None and not r.audio_groups:
             return 0.0
-        p = dict(zip(EMOTION_CLASSES, r.emotion_probs))
-        neg_arousal = p["anger"] + 0.7 * p["fear"] + 0.4 * p["disgust"]
+        neg_arousal = 0.0
+        if r.emotion_probs is not None:
+            p = dict(zip(EMOTION_CLASSES, r.emotion_probs))
+            neg_arousal = p["anger"] + 0.7 * p["fear"] + 0.4 * p["disgust"]
+        if r.audio_groups:  # shouting / screaming / crying in the cabin backs up the face
+            neg_arousal = max(neg_arousal, 0.8 * r.audio_groups.get("distress", 0.0))
         return self._ema_affect(t, float(np.clip(neg_arousal, 0, 1)))
 
     # ----------------------------------------------------------------- main

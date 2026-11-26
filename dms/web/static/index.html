@@ -33,6 +33,7 @@
     <label class="toggle"><input type="checkbox" id="opt-voice" checked> Voice</label>
     <label class="toggle"><input type="checkbox" id="opt-sound" checked> Buzzer</label>
     <label class="toggle"><input type="checkbox" id="opt-objects" checked> Phone/object detection</label>
+    <label class="toggle hidden" id="opt-audio-wrap" title="Microphone (webcam mode) or the video's own sound (file mode). Audio is analysed in memory and never recorded."><input type="checkbox" id="opt-audio"> 🎤 Audio</label>
     <button id="report-btn" class="btn">Trip report</button>
   </div>
 
@@ -76,6 +77,12 @@
         <div class="card stat"><div class="k">Yawns (5 min)</div><div class="v" id="s-yawns">–</div><div class="s" id="s-mouth"></div></div>
         <div class="card stat"><div class="k">Attention</div><div class="v" id="s-attn">–</div><div class="s" id="s-pose"></div></div>
         <div class="card stat"><div class="k">Behaviour</div><div class="v" id="s-beh">–</div><div class="s" id="s-beh-sub"></div></div>
+      </div>
+      <div class="card hidden" id="audio-card">
+        <div class="card-head">Cabin audio <span class="muted" id="audio-state">off</span></div>
+        <div class="barrow"><span>Level</span><div class="hbar"><div id="b-audio"></div></div><b id="v-audio">–</b></div>
+        <div id="audio-groups" class="chips"></div>
+        <div class="muted small" id="audio-top"></div>
       </div>
       <div class="card">
         <div class="card-head">Emotion <span class="muted" id="emo-top"></span></div>
@@ -179,8 +186,18 @@
     <div class="modal-foot">
       <button class="btn" id="dl-json">Download JSON</button>
       <button class="btn" id="dl-csv">Download timeline CSV</button>
-      <button class="btn" onclick="window.print()">Print / save PDF</button>
+      <button class="btn" id="print-btn">Print / save PDF</button>
     </div>
+  </div>
+</div>
+
+<div id="sos" class="sos hidden" role="alertdialog" aria-live="assertive">
+  <div class="sos-box">
+    <div class="sos-title" id="sos-title">Possible accident!</div>
+    <div class="sos-sub" id="sos-sub">Are you OK?</div>
+    <div class="sos-count" id="sos-count">15</div>
+    <div class="sos-note" id="sos-note">If nobody responds, your emergency contact will be alerted.</div>
+    <button class="btn sos-ok" id="sos-ok">I'm OK</button>
   </div>
 </div>
 

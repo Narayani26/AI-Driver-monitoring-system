@@ -267,13 +267,35 @@ Prints parameters, MB, and milliseconds per inference (PyTorch and ONNX). Run it
 
 ### 5.6 Use the trained models in the demo
 ```bash
-python -m dms.web.server --face-ckpt runs/face/best.pt --temporal-ckpt runs/temporal/deploy.pt --yolo runs/yolo/weights/best.pt
+python -m dms.web.server --face-ckpt runs/face/best.pt
 ```
-* `--face-ckpt` replaces the pretrained emotion model with yours.
-* `--temporal-ckpt` adds the "alertness" prediction to drowsiness.
-* `--cabin-ckpt` is optional (side-view cameras).
+* `--face-ckpt` loads your **trained eye-state network** (97.9% on unseen people). It is fused with the eye-geometry measure: the network decides when it is confident (> 70% either way), the geometry settles uncertain cases. The **Eye state** row of *How it works* and the eyes card ("CNN closed …%") show it is active.
+* Emotion stays on the pretrained AffectNet model by default, because it is usually better on live webcams. To use your own emotion head instead: add `--emotion trained`.
+* `--temporal-ckpt runs/temporal/deploy.pt` adds the drowsiness-over-time model (after UTA-RLDD training).
+* `--cabin-ckpt runs/cabin/best.pt` is optional (side-view cameras).
+* `--yolo runs/yolo/weights/best.pt` uses a fine-tuned YOLO.
+* Calibration (temperature scaling) stored in the checkpoints is applied automatically.
 
----
+### 5.7 Train better models (next Kaggle run)
+In the notebook's first cell set `PRESET = "best"`: EfficientNet-B2 for both models, 15 epochs, test-time augmentation, about 5 hours on a T4, so run it overnight with **Save & Run All**. Results go to `runs_best/` (download `dms_runs_best.zip`). Every run also reports calibrated confidence (`ECE`, plus `ece_uncalibrated` for comparison).
+
+The biggest accuracy gains come from **data, not epochs**:
+
+| Model | Now | Realistic next step | How |
+|---|---|---|---|
+| Eye state | 97.9% | 98–99% | already near the label-noise ceiling of MRL; add your own recordings (§6) for your camera |
+| Emotion (FER2013) | 69.2% | 72–75% on FER2013; much better live | FER2013's own human agreement is only ~65%. Train on **AffectNet / RAF-DB** (request access) and test on KMU-FED |
+| Behaviour (unseen drivers) | 92.1% | 94–96% | `PRESET="best"`; add **100-Driver** (100 drivers instead of 26) |
+
+"Human-level" is a moving target: for eye state we are already there; for facial emotion, models beat the average human on FER2013, and the real limit is that expressions are ambiguous.
+
+### 5.8 Optional features: cabin audio and accident detection
+```bash
+python -m dms.web.server --face-ckpt runs/face/best.pt --audio --mishap
+```
+* `--audio`: an **🎤 Audio** switch appears. It listens to the microphone (webcam mode) or the uploaded video's own soundtrack (file mode) and detects **snoring** (alarm), **shouting/screaming** (stress), **sirens** ("give way"), **phone ringing**, **crash/skid sounds**. Audio is analysed in memory in 1-second windows and never recorded. To test: play a siren or snoring sound from YouTube near the laptop.
+* `--mishap`: **possible-accident detection**. A sudden camera jolt or a crash/skid sound, followed by the driver not responding (face gone or eyes closed for 3 s), triggers a full-screen **"Possible accident! Are you OK?"** with a 15-second countdown and an **I'm OK** button. If nobody presses it, an SOS event is raised and logged. In the planned phone app this would send an SMS with the location. To test: start, then give the laptop lid a sharp knock or jerk (a jolt) and close your eyes for 3 s.
+* Everything else (alerts, trip reports) is also written to the offline event store `~/.dms/events.db`; see `docs/PRODUCTION.md`.
 
 ## 6. Fine-tuning on your own data (makes the demo robust)
 
@@ -339,3 +361,7 @@ Re-run §2.5 with the new checkpoints (`python -m dms.app.run ... --face-ckpt ru
 | Kaggle: no GPU option | Verify your phone number in Kaggle settings |
 | Kaggle: dataset not found in notebook | Check the *Input* panel; the notebook prints what is in `/kaggle/input` (section 1) |
 | Too many / too few alerts | Recalibrate; then adjust thresholds in `dms/features/temporal.py` and cooldowns in `dms/fusion/alerts.py` |
+| `model integrity check failed` | A file in `weights/` was changed or corrupted: `git checkout weights/` or `bash scripts/download_models.sh` |
+| `access token required` | You started with `--host 0.0.0.0`: open the full URL the server printed (it ends with `?token=…`) |
+| Audio switch missing | Start the server with `--audio` |
+| "Only rtsp://, http(s)://…" when pasting a file path in the stream box | Use **Video file** instead, or start with `--allow-files` |

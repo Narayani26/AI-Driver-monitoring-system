@@ -23,12 +23,20 @@ Runs the **GPU-heavy training** for the project. The live demo and the temporal 
 3. Optional, for YOLO: *Add-ons → Secrets* → add `ROBOFLOW_API_KEY`. If the GitHub repo is private, also add `GITHUB_TOKEN`.
 4. **Run All**, or run the sections you need. Each section is skipped automatically if its dataset isn't attached.
 
-When it finishes, download `/kaggle/working/dms_runs.zip` (Output panel), unzip it into the project folder on your Mac (it creates `runs/...`), and the web app shows the results.
+When it finishes, download `/kaggle/working/dms_runs.zip` (or `dms_runs_best.zip` for the "best" preset) from the Output panel, unzip it into the project folder on your Mac, and the web app shows the results. Every model is calibrated (temperature scaling on the validation set) and the calibration is used automatically at runtime.
 """)
 code("""
 REPO = "github.com/Narayani26/AI-Driver-monitoring-system.git"
 BRANCH = "feature/dms-implementation"   # or "main" once the branch is merged
-EPOCHS_FACE, EPOCHS_CABIN, EPOCHS_YOLO = 8, 8, 60   # ~1.5 h total on T4; raise to 15/20 for final paper runs
+PRESET = "fast"   # "fast": MobileNetV3/EfficientNet-B0, 8 epochs (~2 h on T4)
+                  # "best": EfficientNet-B2 for both, 15 epochs + test-time augmentation (~5 h; run it overnight)
+if PRESET == "best":
+    BACKBONE_FACE, BACKBONE_CABIN, EPOCHS_FACE, EPOCHS_CABIN, BS = "efficientnet_b2", "efficientnet_b2", 15, 15, 64
+else:
+    BACKBONE_FACE, BACKBONE_CABIN, EPOCHS_FACE, EPOCHS_CABIN, BS = "mobilenetv3_large_100", "efficientnet_b0", 8, 8, 128
+EPOCHS_YOLO = 60
+EXTRA = "--tta" if PRESET == "best" else ""
+OUT = "runs" if PRESET == "fast" else "runs_best"
 """)
 code("""
 import os, subprocess
@@ -94,7 +102,7 @@ One backbone, three heads, trained on the union of datasets (each image only has
 code("""
 if face_manifests:
     !python -m dms.training.train_image --kind face --manifest {" ".join(face_manifests)} \\
-        --backbone mobilenetv3_large_100 --epochs {EPOCHS_FACE} --bs 128 --lr 5e-4 --workers 4 --out runs/face
+        --backbone {BACKBONE_FACE} --epochs {EPOCHS_FACE} --bs {BS} --lr 5e-4 --workers 4 {EXTRA} --out {OUT}/face
 """)
 md("""
 ## 4. Cabin behaviour model + leakage study (paper experiment E3)
@@ -102,10 +110,10 @@ The same model trained twice: **driver-independent split** (honest) vs **random 
 """)
 code("""
 if os.path.exists("manifests/statefarm.csv"):
-    !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone efficientnet_b0 \\
-        --epochs {EPOCHS_CABIN} --bs 64 --workers 4 --out runs/cabin
-    !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone efficientnet_b0 \\
-        --epochs {EPOCHS_CABIN} --bs 64 --workers 4 --split random --out runs/cabin_randomsplit
+    !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone {BACKBONE_CABIN} \\
+        --epochs {EPOCHS_CABIN} --bs 64 --workers 4 --out {OUT}/cabin
+    !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone {BACKBONE_CABIN} \\
+        --epochs {EPOCHS_CABIN} --bs 64 --workers 4 --split random --out {OUT}/cabin_randomsplit
 """)
 md("""
 ## 5. YOLO fine-tuning: phone / cigarette / seatbelt (optional)
@@ -122,18 +130,18 @@ if RF_WORKSPACE:
 """)
 md("## 6. Export to ONNX + speed benchmark")
 code("""
-for ck in ["runs/face/best.pt", "runs/cabin/best.pt"]:
+for ck in [f"{OUT}/face/best.pt", f"{OUT}/cabin/best.pt"]:
     if os.path.exists(ck):
-        !python -m dms.training.export {ck} --out runs/export
+        !python -m dms.training.export {ck} --out {OUT}/export
 """)
 md("## 7. Results summary + download")
 code("""
 import json, glob
-for p in sorted(glob.glob("runs/**/metrics.json", recursive=True)):
+for p in sorted(glob.glob(f"{OUT}/**/metrics.json", recursive=True)):
     m = json.load(open(p))
     for task, v in m.get("test", {}).items():
-        print(f"{p:45s} {task:8s} acc={v['accuracy']:.4f}  macroF1={v['macro_f1']:.4f}  n={v['n']}")
-!cd /kaggle/working/dms && zip -qr /kaggle/working/dms_runs.zip runs -x "runs/**/last.pt" && ls -lh /kaggle/working/dms_runs.zip
+        print(f"{p:45s} {task:8s} acc={v['accuracy']:.4f}  macroF1={v['macro_f1']:.4f}  ECE={v['ece']:.3f} (uncalibrated {v.get('ece_uncalibrated', v['ece']):.3f})  n={v['n']}")
+!cd /kaggle/working/dms && zip -qr /kaggle/working/dms_{OUT}.zip {OUT} -x "{OUT}/**/last.pt" && ls -lh /kaggle/working/dms_{OUT}.zip
 """)
 
 nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},

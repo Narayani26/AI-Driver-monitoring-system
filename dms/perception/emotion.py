@@ -51,21 +51,24 @@ class HSEmotionONNX:
 
 
 class TorchEmotion:
-    def __init__(self, ckpt: str | Path):
+    def __init__(self, ckpt: str | Path | None = None, model=None, ck: dict | None = None):
         import torch
 
         from ..models import checkpoint
 
         self.torch = torch
-        self.model, ck = checkpoint.load(ckpt)
+        if model is None:
+            model, ck = checkpoint.load(ckpt)
+        self.model = model
         self.size = ck.get("img_size", 224)
+        self.temperature = float((ck.get("temperature") or {}).get("emotion", 1.0))
         self.name = f"FaceStateNet ({ck['arch'].get('backbone')}, trained)"
 
     def __call__(self, face_bgr: np.ndarray) -> np.ndarray:
         from ..data.transforms import to_batch
 
         with self.torch.inference_mode():
-            return self.torch.softmax(self.model(to_batch([face_bgr], self.size))["emotion"], -1)[0].numpy()
+            return self.torch.softmax(self.model(to_batch([face_bgr], self.size))["emotion"] / self.temperature, -1)[0].numpy()
 
 
 def load_emotion(ckpt: str | None = None):
