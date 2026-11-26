@@ -49,6 +49,7 @@ class MonitorConfig:
     face_ckpt: str | None = None
     cabin_ckpt: str | None = None
     temporal_ckpt: str | None = None
+    drowsy_ckpt: str | None = None  # frame-level drowsy/alert model (e.g. trained on NTHU-DDD)
     profile: str | None = None  # load a saved DriverProfile and skip calibration
     calib_seconds: float = 10.0
     emotion: bool = True
@@ -161,6 +162,10 @@ class DriverMonitor:
         self.object_model = self._load_yolo(cfg) if cfg.objects else None
         self.cabin_model = self._load(cfg.cabin_ckpt)
         self.temporal_model = self._load(cfg.temporal_ckpt)
+        self.drowsy_model, drowsy_ck = checkpoint.load(cfg.drowsy_ckpt) if cfg.drowsy_ckpt else (None, None)
+        self._drowsy_T = float(((drowsy_ck or {}).get("temperature") or {}).get("drowsy", 1.0))
+        self._drowsy_size = (drowsy_ck or {}).get("img_size", 224)
+        self._drowsy_p: float | None = None
         self.calibrator = Calibrator(cfg.calib_seconds)
         if cfg.profile:
             self.calibrator.profile = DriverProfile.load(cfg.profile)
@@ -231,6 +236,7 @@ class DriverMonitor:
             "objects": getattr(self.object_model, "name", None),
             "cabin": "CabinNet (trained)" if self.cabin_model is not None else None,
             "temporal": "Conv-Transformer (trained)" if self.temporal_model is not None else None,
+            "drowsy_frame": "frame-level drowsiness CNN (trained)" if self.drowsy_model is not None else None,
             "audio": "YAMNet (MediaPipe, 521 sound classes)" if self.cfg.audio else None,
             "mishap": "camera jolt + crash/skid sound + responsiveness check" if self.cfg.mishap else None,
         }
@@ -245,6 +251,7 @@ class DriverMonitor:
         self.fusion = RiskFusion()
         self.recorder.reset()
         self._emotion_p = self._cabin_p = self._alert_p = None
+        self._drowsy_p = None
         self._eye_p = None
         self._dets = []
         self._last_t = None
@@ -293,6 +300,9 @@ class DriverMonitor:
                 p = self.emotion_model(face)
                 # light temporal smoothing: single-frame FER is noisy
                 self._emotion_p = p if self._emotion_p is None else 0.6 * self._emotion_p + 0.4 * p
+        if self.drowsy_model is not None and obs is not None and self._thr_cabin.ready(t):
+            p = float(torch.softmax(self.drowsy_model(to_batch([frame], self._drowsy_size)) / self._drowsy_T, -1)[0, 1])
+            self._drowsy_p = p if self._drowsy_p is None else 0.85 * self._drowsy_p + 0.15 * p  # ~2 s smoothing at 3 Hz
         if self.cabin_model is not None and self._thr_cabin.ready(t):
             self._cabin_p = torch.softmax(self.cabin_model(to_batch([frame])), -1)[0].numpy()
         if self.object_model is not None and self._thr_obj.ready(t):
@@ -345,6 +355,7 @@ class DriverMonitor:
                 long_distraction=g.long_distraction,
                 vats_distraction=g.vats_distraction,
                 alertness_probs=self._alert_p,
+                frame_drowsy=self._drowsy_p,
                 cabin_probs=self._cabin_p,
                 emotion_probs=self._emotion_p,
                 behaviours=behaviours,

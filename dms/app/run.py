@@ -78,6 +78,7 @@ def main(argv=None):
     ap.add_argument("--log", help="write per-frame JSON lines here")
     ap.add_argument("--headless", action="store_true", help="no display window")
     ap.add_argument("--face-ckpt"), ap.add_argument("--cabin-ckpt"), ap.add_argument("--temporal-ckpt")
+    ap.add_argument("--drowsy-ckpt", help="frame-level drowsiness model (kind 'drowsy', e.g. trained on NTHU-DDD)")
     ap.add_argument("--emotion", choices=["pretrained", "trained"], default="pretrained")
     ap.add_argument("--profile", help="load a saved driver profile (skips calibration)")
     ap.add_argument("--save-profile", help="save the calibrated driver profile here")
@@ -102,7 +103,7 @@ def main(argv=None):
     is_file = not live
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-    mon = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, profile=a.profile,
+    mon = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, drowsy_ckpt=a.drowsy_ckpt, profile=a.profile,
                                       calib_seconds=a.calib_seconds, objects=not a.no_objects, yolo_weights=a.yolo,
                                       emotion_source=a.emotion, mishap=a.mishap, sensitivity=a.sensitivity))
     store = session = None

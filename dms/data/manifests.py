@@ -24,7 +24,8 @@ import pandas as pd
 
 from ..models.networks import EMOTION_CLASSES
 
-TASK_COLS = ("eye", "yawn", "emotion", "cabin")
+TASK_COLS = ("eye", "yawn", "emotion", "cabin", "drowsy")
+BOX_COLS = ("bx", "by", "bw", "bh")  # optional face box (pixels) when images are not face-cropped
 IMG_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 EMOTION_ALIASES = {
@@ -106,6 +107,110 @@ def emotion_folders(root: Path, source: str, id_map: dict | None = None) -> pd.D
     return pd.DataFrame(rows)
 
 
+_PATH_COLS = ("subdirectory_filepath", "image", "image_path", "img", "path", "file", "filename", "pth", "img_path", "image_name")
+_LABEL_COLS = ("expression", "label", "emotion", "exp", "class", "hard_label", "category")
+_BOX = {"face_x": "bx", "face_y": "by", "face_width": "bw", "face_height": "bh"}
+
+
+def _affectnet_label(v) -> int | None:
+    """AffectNet numbering (0 neutral ... 6 anger, 7 contempt, 8-10 none/uncertain/non-face) or a name."""
+    s = str(v).strip().lower()
+    if s.lstrip("-").isdigit():
+        i = int(s)
+        return i if 0 <= i < len(EMOTION_CLASSES) else None
+    cls = EMOTION_ALIASES.get(s)
+    return EMOTION_CLASSES.index(cls) if cls else None
+
+
+def affectnet(root: Path, source: str = "affectnet") -> pd.DataFrame:
+    """AffectNet / AffectNet+ in any of its usual layouts:
+      1. emotion-named or numbered folders          -> emotion_folders
+      2. official: <split>/images/<id>.jpg + <split>/annotations/<id>_exp.npy
+      3. CSV files with an image-path column and an expression column (official
+         training.csv / validation.csv), optional face box (face_x, face_y,
+         face_width, face_height) and optional soft-label columns (one
+         probability per emotion, AffectNet+): the most likely emotion is used.
+    'val'/'validation' folders or CSVs become the test split (AffectNet's
+    official evaluation set); there are no person IDs, so each image is its own group."""
+    import numpy as np
+
+    df = emotion_folders(root, source, AFFECTNET_IDS)
+    if not df.empty and len(df) > 50:
+        return df
+    rows = []
+    for ann in sorted(p for p in root.rglob("annotations") if p.is_dir()):  # layout 2
+        img_dir = ann.parent / "images"
+        if not img_dir.is_dir():
+            continue
+        split = "test" if any(k in ann.parent.name.lower() for k in ("val", "test")) else ""
+        for img in _images(img_dir):
+            f = ann / f"{img.stem}_exp.npy"
+            if not f.exists():
+                continue
+            lab = _affectnet_label(np.load(f, allow_pickle=True).item() if f.suffix == ".npy" else f.read_text())
+            if lab is not None:
+                rows.append(_row(img, _image_id(source, img, root), source, split, emotion=lab))
+    if rows:
+        return pd.DataFrame(rows)
+    by_name = {p.name: p for p in _images(root)}  # layout 3
+    for csv_path in sorted(root.rglob("*.csv")):
+        try:
+            t = pd.read_csv(csv_path, low_memory=False)
+        except Exception:  # noqa: BLE001 - skip unreadable side files
+            continue
+        cols = {c.lower().strip(): c for c in t.columns}
+        pcol = next((cols[c] for c in _PATH_COLS if c in cols), None)
+        lcol = next((cols[c] for c in _LABEL_COLS if c in cols), None)
+        soft = [cols[e] for e in EMOTION_CLASSES if e in cols] or [cols[k] for k, v in EMOTION_ALIASES.items() if k in cols]
+        if pcol is None or (lcol is None and len(soft) < 7):
+            continue
+        split = "test" if any(k in csv_path.stem.lower() for k in ("val", "test")) else ""
+        for r in t.itertuples(index=False):
+            rec = r._asdict() if hasattr(r, "_asdict") else dict(zip(t.columns, r))
+            rel = str(rec[pcol])
+            p = next((c for c in (csv_path.parent / rel, root / rel) if c.is_file()), None) or by_name.get(Path(rel).name)
+            if p is None:
+                continue
+            if lcol is not None:
+                lab = _affectnet_label(rec[lcol])
+            else:
+                probs = [float(rec[c]) for c in soft[:7]]
+                lab = int(np.argmax(probs))
+            if lab is None:
+                continue
+            row = _row(p, _image_id(source, p, root), source, split, emotion=lab)
+            for k, v in _BOX.items():
+                if k in cols:
+                    row[v] = float(rec[cols[k]])
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+NTHU_DROWSY = {"drowsy": 1, "sleepy": 1, "notdrowsy": 0, "not_drowsy": 0, "not drowsy": 0, "nondrowsy": 0,
+               "non_drowsy": 0, "non drowsy": 0, "alert": 0, "nonsleepy": 0}
+SUBJECT_IN_NAME = re.compile(r"^(\d{1,3})[_\-]")
+
+
+def nthu_frames(root: Path, source: str = "nthu") -> tuple[pd.DataFrame, float]:
+    """NTHU-DDD frames in drowsy / notdrowsy folders. Person ID from a leading number in the
+    file name (e.g. 001_glasses_sleepyCombination_12_drowsy.jpg) or from a numbered parent
+    folder. Returns (manifest, fraction of images with a person ID)."""
+    rows, with_id = [], 0
+    for p in _images(root):
+        lab = NTHU_DROWSY.get(p.parent.name.lower())
+        if lab is None:
+            continue
+        m = SUBJECT_IN_NAME.match(p.name)
+        sid = m.group(1) if m else next((q.name for q in p.parents if q.name.isdigit() and len(q.name) <= 3), None)
+        if sid is not None:
+            with_id += 1
+            subj = f"{source}_{int(sid):03d}"
+        else:
+            subj = _image_id(source, p, root)
+        rows.append(_row(p, subj, source, drowsy=lab))
+    return pd.DataFrame(rows), (with_id / len(rows) if rows else 0.0)
+
+
 def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subject_regex: str | None = None,
             case_insensitive: bool = False) -> pd.DataFrame:
     """Generic: folder name -> (task, label). Optional regex extracts subject from filename."""
@@ -125,7 +230,7 @@ def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subjec
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("kind", choices=["mrl", "statefarm", "fer", "affectnet", "rafdb", "kmufed", "yawneye", "folders"])
+    ap.add_argument("kind", choices=["mrl", "statefarm", "fer", "affectnet", "rafdb", "kmufed", "yawneye", "nthu", "folders"])
     ap.add_argument("root", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--map", nargs="*", default=[], help="folders: NAME=task:label ...")
@@ -137,7 +242,10 @@ def main(argv=None):
     elif a.kind == "statefarm":
         df = statefarm(a.root)
     elif a.kind == "affectnet":
-        df = emotion_folders(a.root, "affectnet", AFFECTNET_IDS)
+        df = affectnet(a.root)
+    elif a.kind == "nthu":
+        df, frac = nthu_frames(a.root)
+        print(f"person IDs found for {frac:.0%} of images" + ("" if frac > 0.9 else "  <- WARNING: splits will leak people"))
     elif a.kind == "rafdb":
         df = emotion_folders(a.root, "rafdb", RAFDB_IDS)
     elif a.kind == "yawneye":

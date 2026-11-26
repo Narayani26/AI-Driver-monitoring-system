@@ -24,15 +24,16 @@ from torch.utils.data import DataLoader
 from ..data.datasets import ManifestDataset, balanced_sampler, load_manifests, random_split, subject_split
 from ..data.transforms import eval_transform, train_transform
 from ..models import checkpoint
-from ..models.networks import CABIN_CLASSES, EMOTION_CLASSES, EYE_CLASSES, YAWN_CLASSES, CabinNet, FaceStateNet
+from ..models.networks import CABIN_CLASSES, DROWSY_CLASSES, EMOTION_CLASSES, EYE_CLASSES, YAWN_CLASSES, CabinNet, FaceStateNet
 from .metrics import classification_metrics, plot_confusion
 
-CLASSES = {"eye": EYE_CLASSES, "yawn": YAWN_CLASSES, "emotion": EMOTION_CLASSES, "cabin": CABIN_CLASSES}
+CLASSES = {"eye": EYE_CLASSES, "yawn": YAWN_CLASSES, "emotion": EMOTION_CLASSES, "cabin": CABIN_CLASSES, "drowsy": DROWSY_CLASSES}
+SINGLE_TASK = {"cabin": "cabin", "drowsy": "drowsy"}  # kind -> its one task
 
 
 def get_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--kind", choices=["face", "cabin"], required=True)
+    ap.add_argument("--kind", choices=["face", "cabin", "drowsy"], required=True)
     ap.add_argument("--manifest", nargs="+", required=True)
     ap.add_argument("--test-manifest", nargs="*", default=[], help="datasets used ONLY for testing (e.g. KMU-FED for in-car emotion)")
     ap.add_argument("--out", default="runs/exp")
@@ -70,7 +71,7 @@ def collect_logits(model, loader, tasks, device, kind, tta: bool = False) -> dic
     for x, y in loader:
         x = x.to(device, non_blocking=True)
         out = model(x)
-        out = out if kind == "face" else {"cabin": out}
+        out = out if kind == "face" else {SINGLE_TASK[kind]: out}
         if tta and kind == "face":
             flipped = model(torch.flip(x, dims=[3]))
             out = {t: (out[t] + flipped[t]) / 2 for t in out}
@@ -114,7 +115,7 @@ def evaluate(model, loader, tasks, device, kind):
     for x, y in loader:
         x = x.to(device, non_blocking=True)
         out = model(x)
-        out = out if kind == "face" else {"cabin": out}
+        out = out if kind == "face" else {SINGLE_TASK[kind]: out}
         for t in tasks:
             m = y[t] >= 0
             if m.any():
@@ -130,7 +131,7 @@ def main(argv=None):
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-    tasks = ("eye", "yawn", "emotion") if a.kind == "face" else ("cabin",)
+    tasks = ("eye", "yawn", "emotion") if a.kind == "face" else (SINGLE_TASK[a.kind],)
 
     df = load_manifests(a.manifest)
     df = df[(df[list(tasks)] >= 0).any(axis=1)]
@@ -148,7 +149,7 @@ def main(argv=None):
     print({s: int((df.split == s).sum()) for s in ("train", "val", "test", "heldout")}, "tasks:", present)
 
     # Horizontal flips would swap left/right-hand cabin classes (texting_right <-> texting_left).
-    ttf = train_transform(a.img_size, flip=a.kind == "face")
+    ttf = train_transform(a.img_size, flip=a.kind != "cabin")
     etf = eval_transform(a.img_size)
     tr_df = df[df.split == "train"]
     tr = ManifestDataset(tr_df, ttf, tasks)
@@ -169,8 +170,8 @@ def main(argv=None):
         arch = {"backbone": backbone}
         model = FaceStateNet(backbone, pretrained=pretrained)
     else:
-        arch = {"backbone": backbone}
-        model = CabinNet(backbone, pretrained=pretrained)
+        arch = {"backbone": backbone, **({"num_classes": 2} if a.kind == "drowsy" else {})}
+        model = CabinNet(backbone, pretrained=pretrained, **({"num_classes": 2} if a.kind == "drowsy" else {}))
     if a.init_ckpt:
         init, ck = checkpoint.load(a.init_ckpt)
         if ck["kind"] != a.kind:
@@ -185,7 +186,7 @@ def main(argv=None):
     def set_backbone_trainable(flag: bool):
         for p_ in backbone_params:
             p_.requires_grad_(flag)
-        if a.kind == "cabin":  # the classifier layer lives inside model.net; keep it trainable
+        if a.kind != "face":  # the classifier layer lives inside model.net; keep it trainable
             for p_ in model.net.get_classifier().parameters():
                 p_.requires_grad_(True)
 
@@ -209,7 +210,7 @@ def main(argv=None):
             y = {k: v.to(device) for k, v in y.items()}
             with torch.autocast(device, enabled=use_amp):
                 o = model(x)
-                loss = model.loss(o, y, a.label_smoothing)[0] if a.kind == "face" else ce(o, y["cabin"])
+                loss = model.loss(o, y, a.label_smoothing)[0] if a.kind == "face" else ce(o, y[SINGLE_TASK[a.kind]])
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)

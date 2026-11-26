@@ -106,12 +106,12 @@ def serialize(r: FrameResult, shape, proc_ms: float) -> dict:
 def collect_metrics() -> list[dict]:
     """Summaries of every training run under runs/ for the 'How it works' tab."""
     rows = []
-    for p in sorted((ROOT / "runs").glob("**/metrics.json")):
+    for p in sorted(q for d in ROOT.glob("runs*") if d.is_dir() for q in d.glob("**/metrics.json")):  # runs/, runs_best/, runs_temporal/
         try:
             m = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        name = str(p.parent.relative_to(ROOT / "runs"))
+        name = str(p.parent.relative_to(ROOT))
         if "test" in m:
             for task, v in m["test"].items():
                 split = m.get("args", {}).get("split", "subject")
@@ -332,7 +332,7 @@ async def ws_endpoint(ws: WebSocket):
     s = Session(ws)
     STATE["sessions"] += 1
     try:
-        keys = ("face_ckpt", "cabin_ckpt", "temporal_ckpt", "yolo_weights")
+        keys = ("face_ckpt", "cabin_ckpt", "temporal_ckpt", "drowsy_ckpt", "yolo_weights")
         cfg = MonitorConfig(**{k: CFG.get(k) for k in keys if CFG.get(k)}, calib_seconds=CFG.get("calib_seconds", 5.0),
                             emotion_source=CFG.get("emotion_source", "pretrained"), audio=CFG["audio"], mishap=CFG["mishap"],
                             sensitivity=CFG.get("sensitivity", "normal"))
@@ -374,6 +374,7 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1", help="127.0.0.1 = this computer only (default); 0.0.0.0 = whole network (token required)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--face-ckpt"), ap.add_argument("--cabin-ckpt"), ap.add_argument("--temporal-ckpt")
+    ap.add_argument("--drowsy-ckpt", help="frame-level drowsiness model (kind 'drowsy', e.g. trained on NTHU-DDD)")
     ap.add_argument("--calib-seconds", type=float, default=5.0)
     ap.add_argument("--emotion", choices=["pretrained", "trained"], default="pretrained",
                     help="emotion model: pretrained HSEmotion (default) or the emotion head of --face-ckpt")
@@ -398,7 +399,7 @@ def main(argv=None):
     token = a.token or os.environ.get("DMS_TOKEN") or (security.new_token() if exposed else None)
     if exposed and not a.ssl_certfile:
         print("  WARNING: serving on the network without HTTPS - camera frames travel unencrypted. Use --ssl-certfile/--ssl-keyfile.")
-    CFG.update(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, yolo_weights=a.yolo, calib_seconds=a.calib_seconds,
+    CFG.update(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, drowsy_ckpt=a.drowsy_ckpt, yolo_weights=a.yolo, calib_seconds=a.calib_seconds,
                emotion_source=a.emotion, audio=a.audio, mishap=a.mishap, sensitivity=a.sensitivity, token=token, bind_host=a.host,
                allow_files=a.allow_files, origins=set(a.allow_origin), weight_problems=problems)
     if a.store:
@@ -406,7 +407,7 @@ def main(argv=None):
         if a.sync_url:
             STATE["syncer"] = Syncer(STATE["store"], a.sync_url, os.environ.get("DMS_SYNC_TOKEN"))
             STATE["syncer"].start()
-    probe = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, yolo_weights=a.yolo,
+    probe = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, drowsy_ckpt=a.drowsy_ckpt, yolo_weights=a.yolo,
                                         emotion_source=a.emotion, audio=a.audio, mishap=a.mishap))
     CFG["models_info"] = probe.models_info()
     probe.close()

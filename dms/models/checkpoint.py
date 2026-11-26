@@ -11,6 +11,7 @@ BUILDERS = {
     "face": lambda a: FaceStateNet(pretrained=False, **a),
     "cabin": lambda a: CabinNet(pretrained=False, **a),
     "temporal": lambda a: build_temporal(**a),
+    "drowsy": lambda a: CabinNet(pretrained=False, **{"num_classes": 2, **a}),
 }
 
 

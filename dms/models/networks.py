@@ -35,6 +35,7 @@ CABIN_CLASSES = (
     "talking_to_passenger",
 )
 ALERTNESS_CLASSES = ("alert", "low_vigilant", "drowsy")
+DROWSY_CLASSES = ("alert", "drowsy")  # frame-level (NTHU-DDD style) drowsiness
 
 FACE_TASKS = {"eye": len(EYE_CLASSES), "yawn": len(YAWN_CLASSES), "emotion": len(EMOTION_CLASSES)}
 

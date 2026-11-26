@@ -478,10 +478,75 @@ def test_dataset_discovery_by_content(tmp_path):
         put("datasets", "z", "driver-drowsiness-dataset-ddd", f)
     r = discover(tmp_path, tmp_path / "manifests")
     kinds = sorted(f.kind for f in r["found"])
-    assert kinds == ["emotion", "emotion", "rafdb", "skipped", "yawneye"]
+    assert kinds == ["drowsyframes", "emotion", "emotion", "rafdb", "yawneye"]
+    assert r["drowsy"] == []  # the DDD copy has no person IDs -> not used
     raf = pd.read_csv(next(p for p in r["face"] if "rafdb" in p))
     assert set(raf.emotion) == set(range(7)) and set(raf.split) == {"train", "test"}
     aff = pd.read_csv(next(p for p in r["face"] if "affectnet" in p))
     assert len(aff) == 7 * 3  # contempt is not one of our 7 classes
     ye = pd.read_csv(next(p for p in r["face"] if "yawn" in p))
     assert (ye.yawn >= 0).sum() == 6 and (ye.eye >= 0).sum() == 6
+
+
+def test_discovery_of_official_affectnet_and_csv_layouts(tmp_path):
+    import cv2
+    from dms.data.discover import discover
+
+    img = np.zeros((16, 16, 3), np.uint8)
+    # official AffectNet layout: <split>/images/<id>.jpg + <split>/annotations/<id>_exp.npy
+    for split, ids in (("train_set", range(0, 24)), ("val_set", range(100, 116))):
+        (tmp_path / "datasets/mohammadmahoor/affectnetplus" / split / "images").mkdir(parents=True)
+        (tmp_path / "datasets/mohammadmahoor/affectnetplus" / split / "annotations").mkdir(parents=True)
+        for i in ids:
+            base = tmp_path / "datasets/mohammadmahoor/affectnetplus" / split
+            cv2.imwrite(str(base / "images" / f"{i}.jpg"), img)
+            np.save(base / "annotations" / f"{i}_exp.npy", np.array(str(i % 9)))  # 7=contempt, 8=none -> dropped
+    # CSV-labelled dataset
+    d = tmp_path / "datasets/someone/emotion-table/imgs"
+    d.mkdir(parents=True)
+    names = ["happy", "sad", "angry", "neutral", "fear", "surprise"] * 3
+    for k, n in enumerate(names):
+        cv2.imwrite(str(d / f"img{k}.png"), img)
+    pd.DataFrame({"image_path": [f"imgs/img{k}.png" for k in range(len(names))], "emotion": names}).to_csv(d.parent / "labels.csv", index=False)
+
+    r = discover(tmp_path, tmp_path / "manifests")
+    aff = pd.read_csv(next(p for p in r["face"] if "affectnet" in p))
+    assert set(aff.emotion) == set(range(7)) and len(aff) == len([i for i in list(range(24)) + list(range(100, 116)) if i % 9 < 7])
+    assert set(aff.split) == {"train", "test"}  # AffectNet's official validation set is reported as test (as in the literature)
+    tab = pd.read_csv(next(p for p in r["face"] if "emo_emotion_table" in p))
+    assert len(tab) == len(names)
+
+
+def test_nthu_frames_need_person_ids(tmp_path):
+    import cv2
+    from dms.data.discover import discover
+
+    img = np.zeros((16, 16, 3), np.uint8)
+    with_ids = tmp_path / "with/datasets/x/nthu-ddd"
+    for lab in ("drowsy", "notdrowsy"):
+        (with_ids / lab).mkdir(parents=True)
+        for s in range(1, 6):
+            for k in range(3):
+                cv2.imwrite(str(with_ids / lab / f"{s:03d}_glasses_sleepyCombination_{k}_{lab}.jpg"), img)
+    r = discover(tmp_path / "with", tmp_path / "m1")
+    df = pd.read_csv(r["drowsy"][0], dtype={"subject": str})
+    assert df.subject.nunique() == 5 and set(df.drowsy) == {0, 1}
+
+    no_ids = tmp_path / "without/datasets/y/driver-drowsiness-dataset-ddd"
+    for lab in ("Drowsy", "Non Drowsy"):
+        (no_ids / lab).mkdir(parents=True)
+        for k in range(5):
+            cv2.imwrite(str(no_ids / lab / f"frame{k}.png"), img)
+    assert discover(tmp_path / "without", tmp_path / "m2")["drowsy"] == []  # leaky -> skipped
+
+
+def test_rldd_video_layouts(tmp_path):
+    from dms.data.sequences import find_videos
+
+    for rel in ("Fold1_part1/01/0.mov", "Fold1_part1/01/5.MOV", "Fold1_part1/01/10.mp4",
+                "byclass/alert/07.mp4", "byclass/drowsy/07.mp4", "flat/12_low_vigilant.avi", "flat/README.txt"):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"")
+    got = sorted((s, l) for s, l, _ in find_videos(tmp_path))
+    assert got == [("01", 0), ("01", 1), ("01", 2), ("07", 0), ("07", 2), ("12", 1)]

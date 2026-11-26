@@ -10,9 +10,11 @@ we look for tell-tale files instead:
     folders named after emotions (angry, happy…) -> FER2013 / AffectNet / any emotion set
     folders 1..7 (RAF-DB label numbers)          -> RAF-DB
     folders 0..7 (AffectNet label numbers)       -> AffectNet
+    images/<id>.jpg + annotations/<id>_exp.npy   -> official AffectNet / AffectNet+ layout
+    a CSV with an image-file column + emotion    -> any emotion dataset labelled by a table
     'kmu' in the dataset name                    -> KMU-FED: in-car emotions, TEST ONLY (never trained on)
-    folders 'Drowsy' / 'Non Drowsy'              -> skipped: frames cut from videos with no person IDs
-                                                    (train/test would share people -> inflated scores)
+    folders drowsy / notdrowsy (NTHU-DDD style)  -> frame-level drowsiness, ONLY if person IDs are in the file
+                                                    names (>= 90%); otherwise skipped (train/test would share people)
 
     python -m dms.data.discover /kaggle/input manifests        # prints what was found
 """
@@ -74,8 +76,9 @@ def classify(root: Path) -> Found | None:
     names = _dir_names(root)
     if "kmu" in slug:
         return Found("kmufed", root, "kmufed", "test only")
-    if {"drowsy", "non drowsy"} <= names or {"drowsy", "non_drowsy"} <= names:
-        return Found("skipped", root, source, "no person IDs -> leaky splits; not used for training")
+    if "drowsy" in names and ({"notdrowsy", "not_drowsy", "not drowsy", "nondrowsy", "non_drowsy", "non drowsy"} & names):
+        # NTHU-DDD-style frames; used only if person IDs can be recovered from file names (checked in build())
+        return Found("drowsyframes", root, "nthu" if "nthu" in slug else "drowsy_" + source)
     if "yawn" in names and ({"no_yawn", "no yawn", "noyawn"} & names):
         return Found("yawneye", root, "yawn_" + source)
     if len(EMOTION_NAMES & names) >= 4:
@@ -85,7 +88,100 @@ def classify(root: Path) -> Found | None:
         return Found("rafdb", root, "rafdb")
     if {str(i) for i in range(0, 7)} <= names:  # AffectNet numbering 0=neutral ... 6=anger (7=contempt dropped)
         return Found("affectnet_ids", root, "affectnet")
+    if next(root.rglob("*_exp.npy"), None):  # official AffectNet / AffectNet+ layout
+        return Found("affectnet_npy", root, "affectnet")
+    if next(root.rglob("*.csv"), None) and next(iter(M._images(root)), None):
+        src = "affectnet" if "affect" in slug else "emo_" + source
+        return Found("emotion_table", root, src, "labels read from a CSV table")
     return None
+
+
+LABEL_COLS = ("expression", "human-label", "human_label", "hard_label", "label", "labels", "emotion", "class", "category")
+PATH_HINTS = ("path", "file", "image", "img", "name", "subdirectory")
+AFFECTNET_NUM = {i: c for i, c in enumerate(M.EMOTION_CLASSES)}  # 0 neutral … 6 anger; 7 contempt / 8-10 none, uncertain, no-face dropped
+
+
+def _split_of(p: Path) -> str:
+    parts = {q.name.lower() for q in p.parents}
+    for key, split in (("train", "train"), ("training", "train"), ("val", "val"), ("valid", "val"), ("validation", "val"), ("test", "test")):
+        if any(x == key or x.startswith(key + "_") or x.endswith("_" + key) for x in parts):
+            return split
+    return ""
+
+
+def _label_to_idx(v, numeric_map: dict) -> int | None:
+    if isinstance(v, str) and not v.strip().lstrip("-").isdigit():
+        name = M.EMOTION_ALIASES.get(v.strip().lower())
+        return M.EMOTION_CLASSES.index(name) if name else None
+    try:
+        name = numeric_map.get(int(float(v)))
+    except (TypeError, ValueError):
+        return None
+    return M.EMOTION_CLASSES.index(name) if name else None
+
+
+def npy_annotations(root: Path) -> pd.DataFrame:
+    """Official AffectNet layout: <split>/images/<id>.jpg + <split>/annotations/<id>_exp.npy (label number)."""
+    import numpy as np
+
+    rows = []
+    for exp in root.rglob("*_exp.npy"):
+        stem = exp.name[: -len("_exp.npy")]
+        img_dir = exp.parent.parent / "images"
+        img = next((img_dir / f"{stem}{ext}" for ext in (".jpg", ".jpeg", ".png") if (img_dir / f"{stem}{ext}").exists()), None)
+        if img is None:
+            continue
+        idx = _label_to_idx(np.load(exp).item(), AFFECTNET_NUM)
+        if idx is not None:
+            rows.append(M._row(img, M._image_id("affectnet", img, root), "affectnet", _split_of(img), emotion=idx))
+    return pd.DataFrame(rows)
+
+
+def table_annotations(root: Path, source: str) -> pd.DataFrame:
+    """A CSV listing image files and an emotion label (names or AffectNet numbers)."""
+    images = {}
+    for p in M._images(root):
+        images.setdefault(p.name, p)
+    rows = []
+    for csv in sorted(root.rglob("*.csv")):
+        if csv.stat().st_size > 300_000_000:
+            continue
+        try:
+            df = pd.read_csv(csv, low_memory=False)
+        except Exception:
+            continue
+        cols = {c.lower(): c for c in df.columns}
+        lab = next((cols[c] for c in LABEL_COLS if c in cols), None)
+        path = next((c for c in df.columns if any(h in c.lower() for h in PATH_HINTS) and not pd.api.types.is_numeric_dtype(df[c])), None)
+        if lab is None or path is None:
+            continue
+        num_map = AFFECTNET_NUM if ("affect" in source or (pd.to_numeric(df[lab], errors="coerce") == 0).any()) else \
+            {int(k): v for k, v in M.RAFDB_IDS.items()}
+        for fname, lv in zip(df[path].astype(str), df[lab]):
+            img = images.get(Path(fname).name)
+            idx = _label_to_idx(lv, num_map)
+            if img is not None and idx is not None:
+                rows.append(M._row(img, M._image_id(source, img, root), source, _split_of(img), emotion=idx))
+        if rows:
+            break
+    return pd.DataFrame(rows)
+
+
+def tree(root: Path, depth: int = 3, per_dir: int = 6) -> str:
+    """Short folder listing, to paste when a dataset isn't recognised."""
+    lines = []
+
+    def walk(d: Path, level: int):
+        entries = sorted(d.iterdir())
+        for e in entries[:per_dir]:
+            lines.append("    " * level + e.name + ("/" if e.is_dir() else ""))
+            if e.is_dir() and level + 1 < depth:
+                walk(e, level + 1)
+        if len(entries) > per_dir:
+            lines.append("    " * level + f"... ({len(entries)} entries)")
+
+    walk(root, 0)
+    return "\n".join(lines)
 
 
 def build(found: Found) -> pd.DataFrame:
@@ -101,6 +197,18 @@ def build(found: Found) -> pd.DataFrame:
         return M.emotion_folders(found.root, "affectnet", M.AFFECTNET_IDS)
     if found.kind == "rafdb":
         return M.emotion_folders(found.root, "rafdb", M.RAFDB_IDS)
+    if found.kind == "affectnet_npy":
+        return npy_annotations(found.root)
+    if found.kind == "emotion_table":
+        if found.source.startswith("affectnet"):  # AffectNet CSVs: also face boxes + AffectNet+ soft labels
+            df = M.affectnet(found.root, found.source)
+            if not df.empty:
+                return df
+        return table_annotations(found.root, found.source)
+    if found.kind == "drowsyframes":
+        df, frac = M.nthu_frames(found.root, found.source)
+        found.note = f"person IDs for {frac:.0%} of frames"
+        return df if frac >= 0.9 else df.iloc[0:0]
     if found.kind == "kmufed":
         df = M.emotion_folders(found.root, "kmufed")
         return df.assign(split="test")
@@ -111,12 +219,12 @@ def discover(base: str | Path, out_dir: str | Path) -> dict:
     """Returns {"face": [...], "face_test": [...], "cabin": [...], "found": [Found, ...]} with manifest paths."""
     base, out_dir = Path(base), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    res = {"face": [], "face_test": [], "cabin": [], "found": []}
+    res = {"face": [], "face_test": [], "cabin": [], "drowsy": [], "found": []}
     used_sources: set[str] = set()
     for root in dataset_roots(base):
         f = classify(root)
         if f is None:
-            print(f"  ?  {root}  (not recognised, ignored)")
+            print(f"  ?  {root}  (not recognised, ignored). Its folders - paste this to get it supported:\n" + tree(root))
             continue
         res["found"].append(f)
         if f.kind == "skipped":
@@ -131,15 +239,23 @@ def discover(base: str | Path, out_dir: str | Path) -> dict:
             print(f"  !  {root}  -> {f.kind}: failed ({type(e).__name__}: {e})")
             continue
         if df.empty:
-            print(f"  !  {root}  -> {f.kind}: no images found")
+            if f.kind == "drowsyframes":
+                print(f"  !  {root}  -> skipped ({f.note}): without person IDs, train and test would share people "
+                      "and the score would be inflated. Its folders:\n" + tree(root))
+            else:
+                print(f"  !  {root}  -> {f.kind}: no labelled images found. Its folders:\n" + tree(root))
             continue
+        if f.source.startswith("affectnet") and "split" in df:
+            # AffectNet has no public test set; its official validation set is what papers report on.
+            # Use it as our test set; our validation split is carved from the training images.
+            df["split"] = df["split"].replace({"val": "test"})
         used_sources.add(f.source)
         path = out_dir / f"{f.source}.csv"
         df.to_csv(path, index=False)
         tasks = {c: int((df[c] >= 0).sum()) for c in M.TASK_COLS if (df[c] >= 0).any()}
         print(f"  ✓  {root}  -> {f.kind:9s} {len(df):7d} images, {df.subject.nunique():6d} groups, labels {tasks}"
               + (f"  [{f.note}]" if f.note else ""))
-        key = "cabin" if f.kind == "statefarm" else "face_test" if f.kind == "kmufed" else "face"
+        key = {"statefarm": "cabin", "kmufed": "face_test", "drowsyframes": "drowsy"}.get(f.kind, "face")
         res[key].append(str(path))
     return res
 
@@ -152,7 +268,7 @@ def main(argv=None):
     if not a.base.is_dir():
         sys.exit(f"{a.base} is not a folder")
     r = discover(a.base, a.out)
-    print("\nface training :", r["face"], "\nface test only:", r["face_test"], "\ncabin         :", r["cabin"])
+    print("\nface training :", r["face"], "\nface test only:", r["face_test"], "\ncabin         :", r["cabin"], "\ndrowsy frames :", r["drowsy"])
 
 
 if __name__ == "__main__":

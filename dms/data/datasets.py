@@ -15,6 +15,8 @@ from .transforms import bgr_to_rgb3
 def load_manifests(paths: list[str]) -> pd.DataFrame:
     df = pd.concat([pd.read_csv(p, dtype={"subject": str, "split": str}) for p in paths], ignore_index=True)
     df["split"] = df["split"].fillna("")
+    for c in TASK_COLS:  # manifests written before a task existed
+        df[c] = df[c].fillna(-1).astype(int) if c in df else -1
     return df
 
 
@@ -82,6 +84,12 @@ class ManifestDataset(Dataset):
         img = cv2.imread(r.path, cv2.IMREAD_UNCHANGED)
         if img is None:
             raise FileNotFoundError(r.path)
+        if "bw" in r and r.bw == r.bw and r.bw > 0:  # face box given (AffectNet full images): crop with 15% margin
+            m = 0.15 * max(r.bw, r.bh)
+            x0, y0 = int(max(r.bx - m, 0)), int(max(r.by - m, 0))
+            x1, y1 = int(min(r.bx + r.bw + m, img.shape[1])), int(min(r.by + r.bh + m, img.shape[0]))
+            if x1 - x0 > 8 and y1 - y0 > 8:
+                img = img[y0:y1, x0:x1]
         x = self.tf(bgr_to_rgb3(img))
         return x, {t: torch.tensor(int(r[t])) for t in self.tasks}
 

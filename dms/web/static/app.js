@@ -502,7 +502,7 @@ window.addEventListener("resize", () => drawChart($("chart"), S.hist, 60));
 
 function fillModels(models) {
   const rows = [["Face landmarks", models.landmarks], ["Eye state", models.eye], ["Emotion", models.emotion], ["Phone / objects", models.objects],
-    ["Behaviour classifier", models.cabin], ["Temporal drowsiness", models.temporal]];
+    ["Behaviour classifier", models.cabin], ["Temporal drowsiness", models.temporal], ["Frame drowsiness", models.drowsy_frame]];
   $("models-table").innerHTML = "<tr><th>Component</th><th>Model</th></tr>" + rows.map(([k, v]) =>
     `<tr><td>${k}</td><td>${v ? esc(v) : '<span class="muted">not loaded (train it, then pass the checkpoint)</span>'}</td></tr>`).join("");
 }

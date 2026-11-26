@@ -55,6 +55,7 @@ class RiskInputs:
     long_distraction: bool = False
     vats_distraction: bool = False
     alertness_probs: np.ndarray | None = None  # from temporal model
+    frame_drowsy: float | None = None  # smoothed P(drowsy) from a frame-level model (NTHU-DDD style)
     cabin_probs: np.ndarray | None = None  # from CabinNet
     emotion_probs: np.ndarray | None = None  # from FaceStateNet / HSEmotion
     behaviours: dict | None = None  # from YOLO: {"phone": conf, "smoking": conf, ...}
@@ -97,6 +98,10 @@ class RiskFusion:
         if r.audio_groups and r.audio_groups.get("snoring", 0.0) >= 0.5:
             s = max(s, 0.9)
             reasons.append("snoring sound")
+        if r.frame_drowsy is not None:  # supporting evidence only: it can raise, never dominate
+            if r.frame_drowsy > 0.7:
+                reasons.append(f"drowsy appearance ({r.frame_drowsy:.0%})")
+            s = 0.75 * s + 0.25 * r.frame_drowsy
         if r.alertness_probs is not None:
             p = r.alertness_probs
             model = float(p[ALERTNESS_CLASSES.index("low_vigilant")] * 0.5 + p[ALERTNESS_CLASSES.index("drowsy")])
