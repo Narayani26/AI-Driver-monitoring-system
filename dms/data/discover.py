@@ -222,6 +222,8 @@ def discover(base: str | Path, out_dir: str | Path) -> dict:
     res = {"face": [], "face_test": [], "cabin": [], "drowsy": [], "found": []}
     used_sources: set[str] = set()
     for root in dataset_roots(base):
+        if root.resolve() == out_dir.resolve():  # our own output folder, not a dataset
+            continue
         f = classify(root)
         if f is None:
             print(f"  ?  {root}  (not recognised, ignored). Its folders - paste this to get it supported:\n" + tree(root))

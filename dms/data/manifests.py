@@ -201,14 +201,20 @@ def nthu_frames(root: Path, source: str = "nthu") -> tuple[pd.DataFrame, float]:
         if lab is None:
             continue
         m = SUBJECT_IN_NAME.match(p.name)
-        sid = m.group(1) if m else next((q.name for q in p.parents if q.name.isdigit() and len(q.name) <= 3), None)
+        # only folders INSIDE the dataset count (a path like /private/var/folders/25/... must not become person "25")
+        inner = p.relative_to(root).parts[:-1]
+        sid = m.group(1) if m else next((q for q in reversed(inner) if q.isdigit() and len(q) <= 3), None)
         if sid is not None:
             with_id += 1
             subj = f"{source}_{int(sid):03d}"
         else:
             subj = _image_id(source, p, root)
         rows.append(_row(p, subj, source, drowsy=lab))
-    return pd.DataFrame(rows), (with_id / len(rows) if rows else 0.0)
+    df = pd.DataFrame(rows)
+    frac = with_id / len(rows) if rows else 0.0
+    if frac and df[df.subject.str.match(rf"^{source}_\d{{3}}$")].subject.nunique() < 3:
+        frac = 0.0  # fewer than 3 distinct people: not real person IDs, can't split by person
+    return df, frac
 
 
 def folders(root: Path, mapping: dict[str, tuple[str, int]], source: str, subject_regex: str | None = None,
