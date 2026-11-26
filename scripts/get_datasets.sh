@@ -5,7 +5,7 @@
 #   bash scripts/get_datasets.sh fer mrl    # just some
 #
 # Needs the Kaggle CLI + API token (see docs/GUIDE.md §4.1):
-#   pip install kaggle && mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
+#   pip install kaggle six && mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
 # State Farm is a competition: click "Join Competition" / accept the rules on its Kaggle page once first.
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -13,6 +13,9 @@ ultralytics>=8.3
 # Deployment / benchmarking
 onnx>=1.16
 onnxruntime>=1.18
+# Dataset downloads (scripts/get_datasets.sh); 'six' is a dependency kaggle forgets to declare
+kaggle>=1.6
+six
 # Web demo
 fastapi>=0.110
 uvicorn[standard]>=0.29

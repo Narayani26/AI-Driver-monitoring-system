@@ -141,7 +141,7 @@ If alerts are too sensitive or not sensitive enough for your face or lighting, p
 2. Settings → **API → Create New Token** downloads `kaggle.json`.
 3. On the Mac:
    ```bash
-   pip install kaggle
+   pip install kaggle six
    mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
    ```
 4. Open https://www.kaggle.com/c/state-farm-distracted-driver-detection → **Join Competition / I understand and accept** (once).
