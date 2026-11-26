@@ -27,8 +27,8 @@ When it finishes, download `/kaggle/working/dms_runs.zip` (Output panel), unzip 
 """)
 code("""
 REPO = "github.com/Narayani26/AI-Driver-monitoring-system.git"
-BRANCH = "main"          # use "feature/dms-implementation" if the pull request isn't merged yet
-EPOCHS_FACE, EPOCHS_CABIN, EPOCHS_YOLO = 15, 20, 60
+BRANCH = "feature/dms-implementation"   # or "main" once the branch is merged
+EPOCHS_FACE, EPOCHS_CABIN, EPOCHS_YOLO = 8, 8, 60   # ~1.5 h total on T4; raise to 15/20 for final paper runs
 """)
 code("""
 import os, subprocess
@@ -84,7 +84,8 @@ if FER:
 # !python -m dms.data.manifests affectnet /kaggle/input/<your-affectnet>/ manifests/affectnet.csv ; face_manifests.append("manifests/affectnet.csv")
 if STATEFARM:
     !python -m dms.data.manifests statefarm "{STATEFARM}" manifests/statefarm.csv
-print(face_manifests)
+face_manifests = [m for m in face_manifests if os.path.exists(m)]  # skip datasets that failed to parse
+print("face training data:", face_manifests, "| State Farm:", os.path.exists("manifests/statefarm.csv"))
 """)
 md("""
 ## 3. Multi-task face model (eye state + yawn + emotion)
@@ -100,7 +101,7 @@ md("""
 The same model trained twice: **driver-independent split** (honest) vs **random image split** (what many papers do). The gap between the two is a result for the paper.
 """)
 code("""
-if STATEFARM:
+if os.path.exists("manifests/statefarm.csv"):
     !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone efficientnet_b0 \\
         --epochs {EPOCHS_CABIN} --bs 64 --workers 4 --out runs/cabin
     !python -m dms.training.train_image --kind cabin --manifest manifests/statefarm.csv --backbone efficientnet_b0 \\
