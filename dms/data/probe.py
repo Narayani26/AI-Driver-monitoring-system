@@ -51,6 +51,11 @@ def probe(root: Path, max_files: int = 300000) -> str:
                 out.append(f"   {f.relative_to(root)} -> header {rows[0][:12]} | first row {rows[1][:12]}")
             except Exception as e:  # noqa: BLE001 - probing must never crash
                 out.append(f"   {f.relative_to(root)} (unreadable: {e})")
+        elif f.suffix.lower() == ".json":
+            try:
+                out.append(f"   {f.relative_to(root)} -> {f.read_text(errors='replace')[:300]!r}")
+            except OSError as e:
+                out.append(f"   {f.relative_to(root)} (unreadable: {e})")
         elif f.suffix.lower() == ".npy":
             try:
                 import numpy as np

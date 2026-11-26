@@ -50,6 +50,18 @@ The last line should say `… passed`.
    If it says `NO VIDEOS FOUND`, paste the probe block printed above it.
 6. Download `dms_temporal.zip` → `unzip -o ~/Downloads/dms_temporal.zip -d .`
 
+## D2. AffectNet+ as a held-out emotion test (Mac, after C finishes, ~10 min)
+The Kaggle AffectNet+ upload contains only the **validation set** (5,500 images with `.json` labels; `train_set/` holds just a readme: the training images are given out by the authors on request). AffectNet's validation set is what papers report as their test set, so we use it **only to test** (new notebook runs do this automatically).
+
+For the run that's already going, score it on the Mac:
+```bash
+kaggle datasets download -d mohammadmahoor/affectnetplus -p data/affectnetplus --unzip
+python -m dms.data.discover data manifests
+python -m dms.training.evaluate_image runs/face/best.pt manifests/affectnet_plus.csv
+python -m dms.training.evaluate_image hsemotion manifests/affectnet_plus.csv
+```
+The two lines print emotion accuracy for **your model** (trained on FER2013 + RAF-DB, never saw AffectNet) and for the **pretrained demo model** (trained on AffectNet's training set: its home turf, so it has an advantage). Both appear in the web app's results table.
+
 ## E. Use everything in the demo
 ```bash
 python -m dms.web.server --face-ckpt runs_best/face/best.pt \
@@ -68,5 +80,5 @@ python -m dms.web.server --face-ckpt runs_best/face/best.pt \
 | Experiment | What is new | Realistic outcome |
 |---|---|---|
 | Emotion with AffectNet+ (+RAF-DB) | ~10× more emotion data, cleaner labels | clearly better live emotions; AffectNet test accuracy typically 60–65% (8-class papers ~60–65%; 7-class a bit higher) |
-| NTHU frame drowsiness: unseen people vs random split | second leakage study | random split ~95–99%, unseen people much lower: that gap is the finding |
+| NTHU frame drowsiness: unseen people vs random split (the Kaggle copy has **only 4 people**, 18k frames, so the honest test is a single unseen person: report as indicative) | second leakage study | random split ~95–99%, unseen people much lower: that gap is the finding |
 | UTA-RLDD Conv-Transformer vs GRU vs RF, ± calibration | the core temporal experiment | 3-class subject-independent is hard: original baseline ≈ 65% video-level; 70–80% is good |

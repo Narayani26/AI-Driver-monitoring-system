@@ -90,6 +90,8 @@ def classify(root: Path) -> Found | None:
         return Found("affectnet_ids", root, "affectnet")
     if next(root.rglob("*_exp.npy"), None):  # official AffectNet / AffectNet+ layout
         return Found("affectnet_npy", root, "affectnet")
+    if next(root.rglob("annotations/*.json"), None):  # AffectNet+ release: images/<id>.jpg + annotations/<id>.json
+        return Found("affectnet_json", root, "affectnet_plus" if "plus" in slug else "affectnet")
     if next(root.rglob("*.csv"), None) and next(iter(M._images(root)), None):
         src = "affectnet" if "affect" in slug else "emo_" + source
         return Found("emotion_table", root, src, "labels read from a CSV table")
@@ -101,8 +103,11 @@ PATH_HINTS = ("path", "file", "image", "img", "name", "subdirectory")
 AFFECTNET_NUM = {i: c for i, c in enumerate(M.EMOTION_CLASSES)}  # 0 neutral … 6 anger; 7 contempt / 8-10 none, uncertain, no-face dropped
 
 
-def _split_of(p: Path) -> str:
-    parts = {q.name.lower() for q in p.parents}
+def _split_of(p: Path, root: Path | None = None) -> str:
+    """train/val/test from folder names INSIDE the dataset (folders above it, like a temp dir called
+    test_xyz, must not count)."""
+    inner = p.relative_to(root).parts[:-1] if root is not None else [q.name for q in p.parents]
+    parts = {q.lower() for q in inner}
     for key, split in (("train", "train"), ("training", "train"), ("val", "val"), ("valid", "val"), ("validation", "val"), ("test", "test")):
         if any(x == key or x.startswith(key + "_") or x.endswith("_" + key) for x in parts):
             return split
@@ -120,6 +125,86 @@ def _label_to_idx(v, numeric_map: dict) -> int | None:
     return M.EMOTION_CLASSES.index(name) if name else None
 
 
+JSON_HARD_KEYS = ("human-label", "human_label", "humanlabel", "hard-label", "hard_label", "expression", "label", "emotion", "class")
+JSON_SOFT_HINT = "soft"
+AFFECTNET8 = ("neutral", "happy", "sad", "surprise", "fear", "disgust", "anger", "contempt")
+
+
+def _find_key(obj, wanted):
+    """Depth-first search for the first key (case-insensitive) in `wanted`."""
+    if isinstance(obj, dict):
+        low = {str(k).lower(): k for k in obj}
+        for w in wanted:
+            if w in low:
+                return obj[low[w]]
+        for v in obj.values():
+            r = _find_key(v, wanted)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_key(v, wanted)
+            if r is not None:
+                return r
+    return None
+
+
+def _find_soft(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if JSON_SOFT_HINT in str(k).lower() and isinstance(v, (list, dict)):
+                return v
+            r = _find_soft(v)
+            if r is not None:
+                return r
+    return None
+
+
+def json_label(ann) -> int | None:
+    """Emotion index (our 7 classes) from one AffectNet+ annotation: the human label if present,
+    otherwise the most likely class of the soft label. Contempt / none / uncertain -> None."""
+    hard = _find_key(ann, JSON_HARD_KEYS)
+    if isinstance(hard, (list, dict)):
+        hard = None
+    if hard is not None:
+        idx = _label_to_idx(hard, AFFECTNET_NUM)
+        if idx is not None or str(hard).strip().lower() not in ("", "none"):
+            return idx
+    soft = _find_soft(ann)
+    if isinstance(soft, dict):  # {"neutral": 0.7, "happy": 0.1, ...}
+        named = {M.EMOTION_ALIASES.get(str(k).lower(), str(k).lower()): float(v) for k, v in soft.items()}
+        if not named:
+            return None
+        best = max(named, key=named.get)
+        return M.EMOTION_CLASSES.index(best) if best in M.EMOTION_CLASSES else None
+    if isinstance(soft, list) and len(soft) >= 7:
+        best = int(max(range(len(soft)), key=lambda i: float(soft[i])))
+        return best if best < len(M.EMOTION_CLASSES) else None  # AffectNet order; index 7 = contempt
+    return None
+
+
+def json_annotations(root: Path, source: str) -> pd.DataFrame:
+    """AffectNet+ layout: <split>/images/<id>.jpg + <split>/annotations/<id>.json."""
+    import json
+
+    rows, bad = [], 0
+    for ann_path in root.rglob("annotations/*.json"):
+        img_dir = ann_path.parent.parent / "images"
+        img = next((img_dir / f"{ann_path.stem}{e}" for e in (".jpg", ".jpeg", ".png") if (img_dir / f"{ann_path.stem}{e}").exists()), None)
+        if img is None:
+            continue
+        try:
+            idx = json_label(json.loads(ann_path.read_text()))
+        except (ValueError, OSError):
+            bad += 1
+            continue
+        if idx is not None:
+            rows.append(M._row(img, M._image_id(source, img, root), source, _split_of(img, root), emotion=idx))
+    if bad:
+        print(f"     ({bad} unreadable annotation files skipped)")
+    return pd.DataFrame(rows)
+
+
 def npy_annotations(root: Path) -> pd.DataFrame:
     """Official AffectNet layout: <split>/images/<id>.jpg + <split>/annotations/<id>_exp.npy (label number)."""
     import numpy as np
@@ -133,7 +218,7 @@ def npy_annotations(root: Path) -> pd.DataFrame:
             continue
         idx = _label_to_idx(np.load(exp).item(), AFFECTNET_NUM)
         if idx is not None:
-            rows.append(M._row(img, M._image_id("affectnet", img, root), "affectnet", _split_of(img), emotion=idx))
+            rows.append(M._row(img, M._image_id("affectnet", img, root), "affectnet", _split_of(img, root), emotion=idx))
     return pd.DataFrame(rows)
 
 
@@ -161,7 +246,7 @@ def table_annotations(root: Path, source: str) -> pd.DataFrame:
             img = images.get(Path(fname).name)
             idx = _label_to_idx(lv, num_map)
             if img is not None and idx is not None:
-                rows.append(M._row(img, M._image_id(source, img, root), source, _split_of(img), emotion=idx))
+                rows.append(M._row(img, M._image_id(source, img, root), source, _split_of(img, root), emotion=idx))
         if rows:
             break
     return pd.DataFrame(rows)
@@ -197,6 +282,8 @@ def build(found: Found) -> pd.DataFrame:
         return M.emotion_folders(found.root, "affectnet", M.AFFECTNET_IDS)
     if found.kind == "rafdb":
         return M.emotion_folders(found.root, "rafdb", M.RAFDB_IDS)
+    if found.kind == "affectnet_json":
+        return json_annotations(found.root, found.source)
     if found.kind == "affectnet_npy":
         return npy_annotations(found.root)
     if found.kind == "emotion_table":
@@ -258,6 +345,11 @@ def discover(base: str | Path, out_dir: str | Path) -> dict:
         print(f"  ✓  {root}  -> {f.kind:9s} {len(df):7d} images, {df.subject.nunique():6d} groups, labels {tasks}"
               + (f"  [{f.note}]" if f.note else ""))
         key = {"statefarm": "cabin", "kmufed": "face_test", "drowsyframes": "drowsy"}.get(f.kind, "face")
+        if key == "face" and "split" in df and len(df) and not (df.split == "train").any() and (df.split != "").all():
+            # only an evaluation split is available (e.g. AffectNet+ ships train_set on request only):
+            # never train on it -> held-out test
+            key = "face_test"
+            print("     -> evaluation split only: used as a held-out TEST set (never trained on)")
         res[key].append(str(path))
     return res
 

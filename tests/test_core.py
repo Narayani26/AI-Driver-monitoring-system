@@ -550,3 +550,26 @@ def test_rldd_video_layouts(tmp_path):
         f.write_bytes(b"")
     got = sorted((s, l) for s, l, _ in find_videos(tmp_path))
     assert got == [("01", 0), ("01", 1), ("01", 2), ("07", 0), ("07", 2), ("12", 1)]
+
+
+def test_affectnet_plus_json_validation_only_is_heldout(tmp_path):
+    import cv2
+    from dms.data.discover import discover, json_label
+
+    assert json_label({"human-label": 1, "soft-label": [0.1, 0.7, 0, 0, 0, 0, 0.2, 0]}) == 1  # human label wins
+    assert json_label({"soft-label": [0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.1]}) == 6  # argmax -> anger
+    assert json_label({"labels": {"expression": "happy"}}) == 1  # nested, by name
+    assert json_label({"human-label": 7}) is None  # contempt is not one of our classes
+
+    base = tmp_path / "datasets/mohammadmahoor/affectnetplus/AffeceNet+"
+    (base / "train_set").mkdir(parents=True)
+    (base / "train_set/readme.txt").write_text("training set available on request")
+    for d in ("images", "annotations"):
+        (base / "validation_set" / d).mkdir(parents=True)
+    for i in range(21):
+        cv2.imwrite(str(base / "validation_set/images" / f"{i}.jpg"), np.zeros((16, 16, 3), np.uint8))
+        (base / "validation_set/annotations" / f"{i}.json").write_text(json.dumps({"human-label": i % 8, "soft-label": [0.125] * 8}))
+    r = discover(tmp_path, tmp_path / "m")
+    assert r["face"] == [] and len(r["face_test"]) == 1  # validation only -> held-out test, never trained on
+    df = pd.read_csv(r["face_test"][0])
+    assert set(df.split) == {"test"} and len(df) == 21 - 2  # labels 7 (contempt) dropped

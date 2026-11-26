@@ -101,7 +101,8 @@ def emotion_folders(root: Path, source: str, id_map: dict | None = None) -> pd.D
         cls = (id_map or {}).get(name) or EMOTION_ALIASES.get(name)
         if cls is None:
             continue
-        split = next((s for s in ("train", "val", "test") if s in {q.name.lower() for q in p.parents}), "")
+        inner = {q.lower() for q in p.relative_to(root).parts[:-1]}  # only folders inside the dataset
+        split = next((s for s in ("train", "val", "test") if s in inner), "")
         split = {"val": "val", "test": "test", "train": "train"}.get(split, "")
         rows.append(_row(p, _image_id(source, p, root), source, split, emotion=EMOTION_CLASSES.index(cls)))
     return pd.DataFrame(rows)

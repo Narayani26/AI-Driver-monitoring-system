@@ -106,7 +106,7 @@ def serialize(r: FrameResult, shape, proc_ms: float) -> dict:
 def collect_metrics() -> list[dict]:
     """Summaries of every training run under runs/ for the 'How it works' tab."""
     rows = []
-    for p in sorted(q for d in ROOT.glob("runs*") if d.is_dir() for q in d.glob("**/metrics.json")):  # runs/, runs_best/, runs_temporal/
+    for p in sorted(q for d in ROOT.glob("runs*") if d.is_dir() for pat in ("**/metrics.json", "**/eval_*.json") for q in d.glob(pat)):  # runs/, runs_best/, runs_temporal/
         try:
             m = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
@@ -116,8 +116,10 @@ def collect_metrics() -> list[dict]:
             for task, v in m["test"].items():
                 split = m.get("args", {}).get("split", "subject")
                 rows.append({"run": name, "task": task, "protocol": "subject-independent test split" if split == "subject" else "random split (leaky, for comparison)", "accuracy": v["accuracy"], "macro_f1": v["macro_f1"], "n": v["n"]})
-            for task, v in m.get("test_heldout", {}).items():
-                rows.append({"run": name, "task": task, "protocol": "held-out dataset (never trained on)", "accuracy": v["accuracy"], "macro_f1": v["macro_f1"], "n": v["n"]})
+        if "test_heldout" in m:
+            label = name + (f" ({p.stem[5:]})" if p.stem.startswith("eval_") else "")
+            for task, v in m["test_heldout"].items():
+                rows.append({"run": label, "task": task, "protocol": "held-out dataset (never trained on)", "accuracy": v["accuracy"], "macro_f1": v["macro_f1"], "n": v["n"]})
         elif "summary" in m:
             s = m["summary"]
             rows.append({"run": name, "task": "drowsiness (3-class)", "protocol": "subject-independent k-fold", "accuracy": s["video_accuracy"]["mean"], "macro_f1": s["window_macro_f1"]["mean"], "std": s["window_macro_f1"]["std"]})
