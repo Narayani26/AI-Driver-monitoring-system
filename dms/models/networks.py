@@ -107,11 +107,15 @@ class DrowsinessTransformer(nn.Module):
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, num_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def embed(self, x: torch.Tensor) -> torch.Tensor:
+        """(B, T, F) -> (B, d_model) sequence summary (the [CLS] token)."""
         h = self.proj(self.stem(x.transpose(1, 2)).transpose(1, 2))
         h = torch.cat([self.cls.expand(h.shape[0], -1, -1), h], 1) + self.pe[:, : h.shape[1] + 1]
         h = self.encoder(h)
-        return self.head(self.norm(h[:, 0]))
+        return self.norm(h[:, 0])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.embed(x))
 
 
 class DrowsinessGRU(nn.Module):
@@ -127,8 +131,36 @@ class DrowsinessGRU(nn.Module):
         return self.head(out.mean(1))
 
 
+def sequence_stats(x: torch.Tensor, closed_thr: float = 0.44) -> torch.Tensor:
+    """Classic drowsiness statistics of a (B, T, F) window, computed inside the model so the
+    runtime input stays the same: eye openness mean/std/min, PERCLOS-like closed fraction,
+    blink-transition rate, and mean/std of every other feature. Feature 0 is EAR / driver's open EAR."""
+    ear = x[..., 0]
+    closed = (ear < closed_thr).float()  # openness < 0.2  ==  ear/ear_open < 0.3 + 0.2 * 0.7
+    trans = (closed[:, 1:] - closed[:, :-1]).abs().mean(1)
+    feats = [ear.mean(1), ear.std(1), ear.min(1).values, closed.mean(1), trans]
+    rest = x[..., 1:]
+    return torch.cat([torch.stack(feats, 1), rest.mean(1), rest.std(1)], 1)
+
+
+class DrowsinessHybrid(nn.Module):
+    """Conv-Transformer sequence embedding + engineered window statistics (the features that made
+    the Random Forest strongest on UTA-RLDD), fused before the classifier. Same input as the
+    Transformer, so it drops into the live pipeline unchanged."""
+
+    def __init__(self, in_dim: int = 9, d_model: int = 64, num_classes: int = len(ALERTNESS_CLASSES), drop: float = 0.3, **kw):
+        super().__init__()
+        self.seq = DrowsinessTransformer(in_dim, d_model=d_model, num_classes=num_classes, drop=min(drop, 0.2), **kw)
+        n_stats = 5 + 2 * (in_dim - 1)
+        self.stats = nn.Sequential(nn.LayerNorm(n_stats), nn.Linear(n_stats, 32), nn.GELU())
+        self.head = nn.Sequential(nn.Dropout(drop), nn.Linear(d_model + 32, num_classes))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(torch.cat([self.seq.embed(x), self.stats(sequence_stats(x))], 1))
+
+
 def build_temporal(kind: str, **kw) -> nn.Module:
-    return {"transformer": DrowsinessTransformer, "gru": DrowsinessGRU}[kind](**kw)
+    return {"transformer": DrowsinessTransformer, "gru": DrowsinessGRU, "hybrid": DrowsinessHybrid}[kind](**kw)
 
 
 def count_params(m: nn.Module) -> int:

@@ -28,13 +28,21 @@ from .metrics import classification_metrics, plot_confusion
 from ..data.sequences import normalise_sequence
 
 
-def load_dir(d: Path, calibrate: bool = True) -> list[dict]:
-    """calibrate=False uses one population-average profile for everyone (ablation for C2)."""
+BINARY_CLASSES = ("alert", "drowsy")
+
+
+def load_dir(d: Path, calibrate: bool = True, binary: bool = False) -> list[dict]:
+    """calibrate=False uses one population-average profile for everyone (ablation for C2).
+    binary=True: alert (0) vs drowsy (10) only; the ambiguous low-vigilant videos are left out."""
     vids = []
     for p in sorted(Path(d).glob("*.npz")):
         z = np.load(p, allow_pickle=True)
+        if binary and int(z["label"]) == 1:
+            continue
         prof = DriverProfile(*z["profile"][:4], int(z["profile"][4])) if calibrate and "profile" in z else DriverProfile()
-        vids.append({"x": normalise_sequence(z["raw"], prof).astype(np.float32), "y": int(z["label"]), "subject": str(z["subject"]), "name": p.stem})
+        y = int(z["label"])
+        vids.append({"x": normalise_sequence(z["raw"], prof).astype(np.float32), "y": (1 if y == 2 else 0) if binary else y,
+                     "subject": str(z["subject"]), "name": p.stem})
     if not vids:
         raise SystemExit(f"no .npz sequences in {d}")
     return vids
@@ -65,8 +73,19 @@ def augment(x: torch.Tensor) -> torch.Tensor:
     return x.masked_fill(mask, 0.0)
 
 
+def arch_of(a, vids) -> dict:
+    arch = {"kind": a.model, "in_dim": vids[0]["x"].shape[1], "num_classes": len(classes_of(a))}
+    if a.model in ("transformer", "hybrid", "gru"):
+        arch["drop"] = a.drop
+    return arch
+
+
+def classes_of(a):
+    return BINARY_CLASSES if a.binary else ALERTNESS_CLASSES
+
+
 def train_nn(train, a, device):
-    model = build_temporal(a.model, in_dim=train[0]["x"].shape[1]).to(device)
+    model = build_temporal(**arch_of(a, train)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.wd)
     ce = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
     rng = np.random.default_rng(a.seed)
@@ -92,7 +111,7 @@ def train_nn(train, a, device):
         opt.step()
         sched.step()
         if (step + 1) % a.steps_per_epoch == 0:
-            print(f"    epoch {(step + 1) // a.steps_per_epoch}/{a.epochs} loss {float(loss):.4f}")
+            print(f"    epoch {(step + 1) // a.steps_per_epoch}/{a.epochs} loss {float(loss.detach()):.4f}")
     return model.eval()
 
 
@@ -106,12 +125,12 @@ def predict_nn(model, vids, a, device):
     return out
 
 
-def evaluate(vids, probs) -> dict:
+def evaluate(vids, probs, classes=ALERTNESS_CLASSES) -> dict:
     yw = np.concatenate([np.full(len(p), v["y"]) for v, p in zip(vids, probs)])
     pw = np.concatenate(probs)
     yv = np.array([v["y"] for v in vids])
     pv = np.stack([p.mean(0) for p in probs])  # video-level: mean of window probs
-    return {"window": classification_metrics(yw, pw, ALERTNESS_CLASSES), "video": classification_metrics(yv, pv, ALERTNESS_CLASSES)}
+    return {"window": classification_metrics(yw, pw, classes), "video": classification_metrics(yv, pv, classes)}
 
 
 def run_fold(train, test, a, device):
@@ -130,7 +149,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("data", type=Path)
     ap.add_argument("--test-dir", type=Path, help="cross-dataset test set (disables CV)")
-    ap.add_argument("--model", choices=["transformer", "gru", "rf"], default="transformer")
+    ap.add_argument("--model", choices=["transformer", "hybrid", "gru", "rf"], default="transformer")
+    ap.add_argument("--binary", action="store_true", help="alert vs drowsy only (low-vigilant videos left out)")
+    ap.add_argument("--drop", type=float, default=0.1, help="dropout (try 0.3 with more epochs)")
     ap.add_argument("--out", default="runs/temporal")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seq-len", type=int, default=300, help="steps (300 = 30 s at 10 Hz)")
@@ -149,15 +170,15 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    vids = load_dir(a.data, calibrate=not a.no_calibration)
+    vids = load_dir(a.data, calibrate=not a.no_calibration, binary=a.binary)
     subjects = np.array([v["subject"] for v in vids])
     print(f"{len(vids)} videos, {len(set(subjects))} subjects, model={a.model}")
 
     results = []
     if a.test_dir:
-        test = load_dir(a.test_dir, calibrate=not a.no_calibration)
+        test = load_dir(a.test_dir, calibrate=not a.no_calibration, binary=a.binary)
         model, probs = run_fold(vids, test, a, device)
-        results.append(evaluate(test, probs))
+        results.append(evaluate(test, probs, classes_of(a)))
         folds = [("cross", model)]
     else:
         folds = []
@@ -166,7 +187,7 @@ def main(argv=None):
             assert not set(subjects[tr]) & set(subjects[te])
             print(f"fold {k}: train {len(tr)} videos / test {len(te)} videos ({len(set(subjects[te]))} unseen subjects)")
             model, probs = run_fold([vids[i] for i in tr], [vids[i] for i in te], a, device)
-            r = evaluate([vids[i] for i in te], probs)
+            r = evaluate([vids[i] for i in te], probs, classes_of(a))
             results.append(r)
             folds.append((k, model))
             print(f"  window macroF1 {r['window']['macro_f1']:.4f}  video acc {r['video']['accuracy']:.4f}")
@@ -177,14 +198,14 @@ def main(argv=None):
             vals = [r[level][m] for r in results]
             summary[f"{level}_{m}"] = {"mean": float(np.mean(vals)), "std": float(np.std(vals))}
     cm = np.sum([r["window"]["confusion"] for r in results], axis=0)
-    plot_confusion(cm, ALERTNESS_CLASSES, out / "confusion_window.png", f"{a.model} - subject-independent")
+    plot_confusion(cm, classes_of(a), out / "confusion_window.png", f"{a.model} - subject-independent")
     if folds[0][1] is not None:  # save the first fold's model (or retrain on all data for deployment)
-        checkpoint.save(out / "best.pt", folds[0][1], "temporal", {"kind": a.model, "in_dim": vids[0]["x"].shape[1]}, seq_len=a.seq_len)
+        checkpoint.save(out / "best.pt", folds[0][1], "temporal", arch_of(a, vids), seq_len=a.seq_len, classes=list(classes_of(a)))
         summary["params"] = count_params(folds[0][1])
     if a.fit_all and a.model != "rf":
         print("retraining on all subjects for deployment")
         final = train_nn(vids, a, device)
-        checkpoint.save(out / "deploy.pt", final, "temporal", {"kind": a.model, "in_dim": vids[0]["x"].shape[1]}, seq_len=a.seq_len)
+        checkpoint.save(out / "deploy.pt", final, "temporal", arch_of(a, vids), seq_len=a.seq_len, classes=list(classes_of(a)))
     (out / "metrics.json").write_text(json.dumps({"args": {k: str(v) for k, v in vars(a).items()}, "summary": summary, "folds": results}, indent=2))
     print(json.dumps(summary, indent=2))
 

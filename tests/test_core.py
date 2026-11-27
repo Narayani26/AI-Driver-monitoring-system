@@ -573,3 +573,36 @@ def test_affectnet_plus_json_validation_only_is_heldout(tmp_path):
     assert r["face"] == [] and len(r["face_test"]) == 1  # validation only -> held-out test, never trained on
     df = pd.read_csv(r["face_test"][0])
     assert set(df.split) == {"test"} and len(df) == 21 - 2  # labels 7 (contempt) dropped
+
+
+def test_hybrid_temporal_model_and_binary(tmp_path):
+    from dataclasses import asdict
+
+    from dms.models.networks import DrowsinessHybrid, sequence_stats
+    from dms.training.train_temporal import load_dir
+
+    x = torch.randn(4, 300, 9)
+    assert sequence_stats(x).shape == (4, 5 + 2 * 8)
+    for nc in (3, 2):
+        m = DrowsinessHybrid(in_dim=9, num_classes=nc).eval()
+        assert m(x).shape == (4, nc)
+        checkpoint.save(tmp_path / f"h{nc}.pt", m, "temporal", {"kind": "hybrid", "in_dim": 9, "num_classes": nc})
+        m2, _ = checkpoint.load(tmp_path / f"h{nc}.pt")
+        assert torch.allclose(m(x), m2(x), atol=1e-5)
+    old = DrowsinessTransformer(in_dim=9).eval()  # checkpoints saved before the embed() refactor still load
+    checkpoint.save(tmp_path / "old.pt", old, "temporal", {"kind": "transformer", "in_dim": 9})
+    assert torch.allclose(old(x), checkpoint.load(tmp_path / "old.pt")[0](x), atol=1e-6)
+
+    d = tmp_path / "seq"
+    d.mkdir()
+    for s in range(3):
+        for lab in (0, 1, 2):
+            np.savez(d / f"x_{s}_{lab}.npz", raw=np.random.rand(50, 9).astype(np.float32), label=lab, subject=f"s{s}",
+                     profile=np.array(list(asdict(PROF).values()), dtype=np.float64))
+    v = load_dir(d, binary=True)
+    assert len(v) == 6 and sorted({x["y"] for x in v}) == [0, 1]  # low-vigilant dropped, drowsy -> 1
+
+
+def test_risk_accepts_binary_temporal_model():
+    out = RiskFusion().update(0.0, RiskInputs(alertness_probs=np.array([0.1, 0.9])))
+    assert out.drowsiness > 0.4 and any("drowsy" in r for r in out.reasons)

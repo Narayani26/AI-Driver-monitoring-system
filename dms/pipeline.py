@@ -235,7 +235,7 @@ class DriverMonitor:
             "eye": self.eye_model.name if self.eye_model else "geometric eye aspect ratio (no eye CNN loaded)",
             "objects": getattr(self.object_model, "name", None),
             "cabin": "CabinNet (trained)" if self.cabin_model is not None else None,
-            "temporal": "Conv-Transformer (trained)" if self.temporal_model is not None else None,
+            "temporal": f"{type(self.temporal_model).__name__.replace('Drowsiness', '')} temporal model (trained)" if self.temporal_model is not None else None,
             "drowsy_frame": "frame-level drowsiness CNN (trained)" if self.drowsy_model is not None else None,
             "audio": "YAMNet (MediaPipe, 521 sound classes)" if self.cfg.audio else None,
             "mishap": "camera jolt + crash/skid sound + responsiveness check" if self.cfg.mishap else None,
@@ -338,7 +338,8 @@ class DriverMonitor:
             x = torch.from_numpy(self.seq.array()).unsqueeze(0)
             self._alert_p = torch.softmax(self.temporal_model(x), -1)[0].numpy()
         if self._alert_p is not None:
-            res.alertness = ALERTNESS_CLASSES[int(np.argmax(self._alert_p))]
+            names = ALERTNESS_CLASSES if len(self._alert_p) == 3 else ("alert", "drowsy")
+            res.alertness = names[int(np.argmax(self._alert_p))]
 
         res.perclos, res.blink_rate, res.yawns = self.eyes.perclos(), self.eyes.blink_rate(), self.yawn.count()
         res.risk = self.fusion.update(

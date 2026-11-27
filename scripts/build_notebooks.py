@@ -23,20 +23,22 @@ Runs the **GPU-heavy training** for the project. The live demo and the temporal 
 3. Optional, for YOLO: *Add-ons → Secrets* → add `ROBOFLOW_API_KEY`. If the GitHub repo is private, also add `GITHUB_TOKEN`.
 4. **Run All**, or run the sections you need. Each section is skipped automatically if its dataset isn't attached.
 
-When it finishes, download `/kaggle/working/dms_runs.zip` (or `dms_runs_best.zip` for the "best" preset) from the Output panel, unzip it into the project folder on your Mac, and the web app shows the results. Every model is calibrated (temperature scaling on the validation set) and the calibration is used automatically at runtime.
+When it finishes, download `/kaggle/working/dms_runs_better.zip` (`dms_runs.zip` for "fast", `dms_runs_best.zip` for "best") from the Output panel, unzip it into the project folder on your Mac, and the web app shows the results. Every model is calibrated (temperature scaling on the validation set) and the calibration is used automatically at runtime.
 """)
 code("""
 REPO = "github.com/Narayani26/AI-Driver-monitoring-system.git"
 BRANCH = "feature/dms-implementation"   # or "main" once the branch is merged
-PRESET = "fast"   # "fast": MobileNetV3/EfficientNet-B0, 8 epochs (~2 h on T4)
-                  # "best": EfficientNet-B2 for both, 15 epochs + test-time augmentation (~5 h; run it overnight)
-if PRESET == "best":
-    BACKBONE_FACE, BACKBONE_CABIN, EPOCHS_FACE, EPOCHS_CABIN, BS = "efficientnet_b2", "efficientnet_b2", 15, 15, 64
-else:
-    BACKBONE_FACE, BACKBONE_CABIN, EPOCHS_FACE, EPOCHS_CABIN, BS = "mobilenetv3_large_100", "efficientnet_b0", 8, 8, 128
+PRESET = "better"  # "fast":   MobileNetV3 / EfficientNet-B0, 8 epochs           (~2-3 h on T4 with all datasets)
+                   # "better": EfficientNet-B0 for both, 12 epochs + test-time aug  (~4-5 h)  <- recommended
+                   # "best":   EfficientNet-B2 for both, 15 epochs + test-time aug  (~10-12 h: may hit Kaggle's 12 h limit)
+PRESETS = {
+    "fast":   ("mobilenetv3_large_100", "efficientnet_b0", 8, 8, 128, ""),
+    "better": ("efficientnet_b0", "efficientnet_b0", 12, 12, 96, "--tta"),
+    "best":   ("efficientnet_b2", "efficientnet_b2", 15, 15, 64, "--tta"),
+}
+BACKBONE_FACE, BACKBONE_CABIN, EPOCHS_FACE, EPOCHS_CABIN, BS, EXTRA = PRESETS[PRESET]
 EPOCHS_YOLO = 60
-EXTRA = "--tta" if PRESET == "best" else ""
-OUT = "runs" if PRESET == "fast" else "runs_best"
+OUT = "runs" if PRESET == "fast" else f"runs_{PRESET}"
 """)
 code("""
 import os, subprocess

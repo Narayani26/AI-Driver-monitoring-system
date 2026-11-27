@@ -104,9 +104,10 @@ class RiskFusion:
             s = 0.75 * s + 0.25 * r.frame_drowsy
         if r.alertness_probs is not None:
             p = r.alertness_probs
-            model = float(p[ALERTNESS_CLASSES.index("low_vigilant")] * 0.5 + p[ALERTNESS_CLASSES.index("drowsy")])
+            names = ALERTNESS_CLASSES if len(p) == 3 else ("alert", "drowsy")
+            model = float(p[1] * 0.5 + p[2]) if len(p) == 3 else float(p[1])
             if model > 0.6:
-                reasons.append(f"temporal model: {ALERTNESS_CLASSES[int(np.argmax(p))]} ({p.max():.0%})")
+                reasons.append(f"temporal model: {names[int(np.argmax(p))]} ({p.max():.0%})")
             s = 0.5 * s + 0.5 * model
         return s
 
