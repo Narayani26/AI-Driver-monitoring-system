@@ -19,6 +19,18 @@ Emotion improved from 69.2% (FER2013 only, run 3) to 73.8% by adding RAF-DB. Tem
 ¹ Yawn-Eye has no person IDs, so near-duplicate frames may sit in both splits; treat 99% as an upper bound.
 ² The Kaggle NTHU-DDD copy contains only 4 people (18,000 frames), so "unseen person" here is one person; indicative only.
 
+**Reproducibility check (run 5):** the whole Kaggle notebook was run again from a clean clone with the same seeds, now with State Farm and AffectNet+ attached. Every number above came out identical to the 4th decimal place (eye 0.9804, yawn 0.9909, emotion 0.7380, NTHU 0.6064), as did behaviour (92.1% unseen drivers / 99.6% random split), so the results are deterministic and reproducible.
+
+### Emotion on a dataset never trained on: AffectNet+ (3,500 human-labelled validation images, 7 classes)
+
+| Model | Trained on | Accuracy | Macro-F1 |
+|---|---|---|---|
+| Our multi-task network, run 3 | FER2013 | 34.4% | – |
+| Our multi-task network, run 4/5 | FER2013 + RAF-DB | 46.9% | 0.443 |
+| Pretrained HSEmotion EfficientNet-B0 | AffectNet (same source as the test) | **63.1%** | – |
+
+Adding RAF-DB raised cross-dataset emotion accuracy by 12.5 points. Our model still trails a model trained on AffectNet itself, because the test images come from that dataset's distribution (an in-domain advantage). Emotion recognition from a single photo also does not transfer well between datasets, so the live demo uses HSEmotion for emotion (`--emotion pretrained`, the default), and emotion only modifies risk; it never triggers an alert by itself. Our 73.8% figure is on FER2013/RAF-DB test sets, 46.9% on a different dataset: both are reported.
+
 ### Run 3 (fast preset, State Farm included)
 
 | Model | Task | Test data | Accuracy | Macro-F1 |
@@ -57,6 +69,22 @@ Findings:
 * With only 60 people, the deep sequence models (GRU, Transformer) do **not** beat engineered features yet: a common small-data result. More training, regularisation and hybrid inputs (§4) are the next steps.
 * 3-class self-reported drowsiness is hard (people's "low vigilant" and "drowsy" look similar); binary alert-vs-drowsy would score considerably higher.
 
+### Round 5: longer training, hybrid model, binary task (same 5 folds, unseen people; reproduce: `bash scripts/train_temporal_all.sh`)
+
+| Model | 3 classes: window macro-F1 | 3 classes: video accuracy | Alert vs drowsy: window macro-F1 | Alert vs drowsy: video accuracy |
+|---|---|---|---|---|
+| Random Forest on engineered features | **0.579 ± 0.020** | **64.7% ± 5.5** | **0.816 ± 0.028** | **87.3% ± 7.5** |
+| Hybrid (Conv-Transformer + in-model statistics) | 0.479 ± 0.058 | 53.4% ± 7.5 | 0.758 ± 0.033 | 80.5% ± 5.8 |
+| Conv-Transformer (40 epochs, dropout 0.3) | 0.491 ± 0.048 | 55.6% ± 7.2 | 0.746 ± 0.031 | 75.5% ± 4.5 |
+| Hybrid **without per-driver calibration** | 0.379 ± 0.033 | 37.6% ± 5.4 | – | – |
+
+Chance level: 33% for 3 classes, 50% for 2 classes.
+
+* **Calibration effect confirmed on a second model:** removing per-driver calibration drops the hybrid from 53.4% to 37.6% video accuracy (**−15.8 points**, close to chance); for the transformer in the earlier round it was −9.6 points.
+* **Binary alert-vs-drowsy** (the usual setting in the literature): RF 87.3%, hybrid 80.5% of unseen drivers' videos correctly classified.
+* The RF stays best with 60 people. Hybrid inputs did not help the 3-class task, but they did help the binary task: 80.5% vs 75.5% for the plain transformer.
+* **Deployed model:** the live app uses the hybrid binary network (`runs_temporal2/hybrid_binary/deploy.pt`, retrained on all 60 people), because it runs inside the same PyTorch/ONNX pipeline on every frame window. The RF is the offline benchmark.
+
 ## 2. Cabin audio alerts (YAMNet + our alert rules), ESC-50
 
 560 clips: all 40 clips of each target sound plus 8 clips of each of the other 45 everyday sound classes (breathing, coughing, laughing, engine, train, rain, wind, fireworks, alarm clocks, …). A clip "alerts" with the live rule (score ≥ threshold in ≥ 2 half-second windows; 1 window for crashes). Reproduce: `python -m dms.tools.evaluate_audio --csv ESC-50/meta/esc50.csv --audio ESC-50/audio`. Raw numbers: [results/audio_eval_esc50.json](results/audio_eval_esc50.json).
@@ -80,7 +108,6 @@ Findings:
 | Camera jolt + driver unresponsive | possible accident → SOS | 3 s + 15 s countdown |
 
 ## 4. Next results (pending)
-* **AffectNet+ validation set (5,500 images) as a held-out emotion test:** our model vs the pretrained HSEmotion model (`dms.training.evaluate_image`, see RUN_TONIGHT D2).
-* Temporal model improvements: longer training, hybrid input (sequence + engineered statistics), binary alert-vs-drowsy variant; NTHU-DDD/DMD cross-dataset test.
-* "Best" preset (EfficientNet-B2, 15 epochs, TTA) with State Farm re-attached.
+* "Better"/"best" image presets (EfficientNet-B0/B2, 12–15 epochs, test-time augmentation): the 5th Kaggle run used the fast preset again.
+* NTHU-DDD/DMD cross-dataset test of the temporal model.
 * False alarms per hour on real drives (`dms.tools.evaluate_alerts`).

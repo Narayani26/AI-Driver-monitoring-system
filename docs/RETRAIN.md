@@ -48,8 +48,9 @@ Quicker run: `EPOCHS=20 bash scripts/train_temporal_all.sh`. Keep the Mac plugge
 
 ## 6. When everything is done
 * Paste to Claude: the table from step 5, the last cell's output of step 4 (lines starting with `runs_better/...`), and the two lines from step 3. `docs/RESULTS.md` gets updated from them.
-* Demo with the best models:
+* Demo with the best models (round-5 results: `hybrid_binary` reached 80.5% video accuracy on unseen people, so it is used):
   ```bash
-  python -m dms.web.server --face-ckpt runs_better/face/best.pt --sensitivity low
+  python -m dms.web.server --face-ckpt runs/face/best.pt --cabin-ckpt runs/cabin/best.pt \
+      --temporal-ckpt runs_temporal2/hybrid_binary/deploy.pt --sensitivity low
   ```
-  Add `--temporal-ckpt runs_temporal2/hybrid_binary/deploy.pt` only if `hybrid_binary` scores well (≥ ~75% video accuracy).
+  (If the Kaggle run used the "better" preset, its folder is `runs_better/` instead of `runs/`.)
