@@ -60,6 +60,9 @@ class RiskInputs:
     emotion_probs: np.ndarray | None = None  # from FaceStateNet / HSEmotion
     behaviours: dict | None = None  # from YOLO: {"phone": conf, "smoking": conf, ...}
     audio_groups: dict | None = None  # from YAMNet: {"snoring": p, "distress": p, ...}
+    head_nod: bool = False  # head dropping forward right now (any camera angle)
+    head_drop: float | None = None  # head lengths below the driver's normal position (side view)
+    nods_5min: int = 0
 
 
 @dataclass
@@ -97,6 +100,13 @@ class RiskFusion:
             reasons.append(f"PERCLOS {r.perclos:.0%}")
         if r.yawns_5min >= 2:
             reasons.append(f"{r.yawns_5min} yawns in 5 min")
+        if r.head_drop is not None and r.head_drop > 0.1:  # head sinking: graded evidence before a full nod
+            s = max(s, 0.7 * _ramp(r.head_drop, 0.1, 0.3))
+            if r.head_drop >= 0.18:
+                reasons.append(f"head lowering ({r.head_drop:.2f} head lengths)")
+        if r.nods_5min >= 1:
+            s = max(s, min(0.5 + 0.15 * r.nods_5min, 0.95))
+            reasons.append(f"{r.nods_5min} head nod{'s' if r.nods_5min > 1 else ''} in 5 min")
         if r.audio_groups and r.audio_groups.get("snoring", 0.0) >= 0.5:
             s = max(s, 0.9)
             reasons.append("snoring sound")
@@ -168,7 +178,7 @@ class RiskFusion:
         d = self._ema_drowsy(t, self._drowsiness(r, reasons))
         # A microsleep is strong evidence of sleepiness: keep drowsiness elevated
         # afterwards and let it decay, instead of "forgetting" when the eyes open.
-        if r.microsleep:
+        if r.microsleep or r.head_nod:
             self._last_microsleep = t
         if self._last_microsleep is not None and t >= self._last_microsleep:
             floor = self.post_microsleep_floor * math.exp(-(t - self._last_microsleep) / self.post_microsleep_tau)
@@ -183,7 +193,7 @@ class RiskFusion:
         base = 1.0 - (1.0 - self.w_drowsy * d) * (1.0 - self.w_distract * x)
         index = 100.0 * float(np.clip(base * (1.0 + self.affect_gain * a), 0.0, 1.0))
         snoring = bool(r.audio_groups and r.audio_groups.get("snoring", 0.0) >= 0.5)
-        if not (self._measured_drowsy or self._measured_distract or snoring or r.microsleep
+        if not (self._measured_drowsy or self._measured_distract or snoring or r.microsleep or r.head_nod
                 or self._last_microsleep is not None and t - self._last_microsleep < 60):
             # only learned models (trained on other people / cameras) are worried: show a caution,
             # never a warning, until something measurable confirms it
@@ -195,6 +205,9 @@ class RiskFusion:
         # Hard overrides: these are always critical regardless of smoothing.
         if r.microsleep:
             reasons.insert(0, f"MICROSLEEP: eyes closed {r.closed_duration:.1f}s")
+            index = 100.0
+        if r.head_nod:
+            reasons.insert(0, "HEAD DROPPING: nodding off")
             index = 100.0
         if r.long_distraction:
             reasons.insert(0, f"eyes off road {r.off_road_duration:.1f}s")

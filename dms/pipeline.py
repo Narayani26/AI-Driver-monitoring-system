@@ -27,7 +27,8 @@ import torch
 
 from .data.transforms import to_batch
 from .features.geometry import LEFT_EYE, RIGHT_EYE, FrameFeatures, compute_features
-from .features.temporal import Calibrator, DriverProfile, EyeClosureTracker, FeatureSequence, GlanceTracker, YawnTracker
+from .features.temporal import (Calibrator, DriverProfile, EyeClosureTracker, FeatureSequence, GlanceTracker, HeadCalibrator,
+                                HeadNodTracker, YawnTracker)
 from .fusion.alerts import Alert, AlertManager
 from .fusion.mishap import JoltDetector, MishapDetector, MishapState
 from .fusion.risk import RiskFusion, RiskInputs, RiskOutput
@@ -37,6 +38,7 @@ from .perception.emotion import HSE_PATH, HSEmotionONNX, TorchEmotion
 from .perception.eyes import EyeStateCNN
 from .perception.face import FaceLandmarker, FaceObservation, bbox_from_points, crop
 from .perception.objects import WEIGHTS as YOLO_WEIGHTS, Detection, behaviour_scores
+from .perception.pose import WEIGHTS as POSE_WEIGHTS, HeadObservation
 from .report import SessionRecorder
 
 
@@ -65,6 +67,9 @@ class MonitorConfig:
     eye_max_pitch: float = 15.0  # degrees from the calibrated pose beyond which eye/mouth shape is not trusted
     eye_max_yaw: float = 25.0
     objects: bool = True  # YOLO phone / drink / smoking detection
+    pose_fallback: bool = True  # side/diagonal cameras: track the head with a body-pose model when no frontal face is found
+    pose_weights: str | None = None
+    head_hz: float = 10.0
     yolo_weights: str | None = None
     object_hz: float = 8.0  # phone use should be caught within about a second
     face_hz: float = 5.0
@@ -108,6 +113,11 @@ class FrameResult:
     audio: dict | None = None  # latest AudioState.as_dict()
     mishap: MishapState | None = None
     fps: float = 0.0
+    mode: str = "face"  # face (frontal landmarks) | side (head keypoints, any angle) | none (no driver found)
+    head: HeadObservation | None = field(default=None, repr=False)
+    head_drop: float | None = None  # head lengths below the driver's normal position (side mode)
+    nodding: bool = False
+    nods: int = 0
     obs: FaceObservation | None = field(default=None, repr=False)
 
     def to_log(self) -> dict:
@@ -254,6 +264,11 @@ class DriverMonitor:
             elif self.face_net is not None:
                 self.emotion_model = TorchEmotion(model=self.face_net, ck=face_ck)
         self.object_model = self._load_yolo(cfg) if cfg.objects else None
+        self.head_model = self._load_pose(cfg) if cfg.pose_fallback else None
+        self.head_cal = HeadCalibrator(cfg.calib_seconds)
+        self._head: HeadObservation | None = None
+        self._head_t = self._face_seen_t = -1e9
+        self._side_eye_p: float | None = None
         self.cabin_model = self._load(cfg.cabin_ckpt)
         self.temporal_model = self._load(cfg.temporal_ckpt)
         self.drowsy_model, drowsy_ck = checkpoint.load(cfg.drowsy_ckpt) if cfg.drowsy_ckpt else (None, None)
@@ -270,6 +285,7 @@ class DriverMonitor:
         self.recorder = SessionRecorder()
         self._thr_face, self._thr_cabin, self._thr_temp = _Throttle(cfg.face_hz), _Throttle(cfg.cabin_hz), _Throttle(cfg.temporal_hz)
         self._thr_obj, self._thr_eye, self._thr_drowsy = _Throttle(cfg.object_hz), _Throttle(cfg.eye_hz), _Throttle(cfg.cabin_hz)
+        self._thr_head = _Throttle(cfg.head_hz)
         self._eye_p: float | None = None
         self._emotion_p = self._cabin_p = self._alert_p = None
         self._dets: list[Detection] = []
@@ -289,6 +305,7 @@ class DriverMonitor:
         self.eyes = EyeClosureTracker(microsleep_s=p["microsleep_s"])
         self.yawn = YawnTracker(min_s=p["yawn_min_s"])
         self.glance = GlanceTracker(long_s=p["long_s"], vats_cum_s=p["vats_cum_s"])
+        self.nod = HeadNodTracker(min_s=max(p["microsleep_s"] + 0.5, 1.2))
         self.alerter = AlertManager(cooldowns={k: v * p["cooldown_scale"] for k, v in COOLDOWN_S.items()},
                                     drowsy_threshold=p["drowsy_threshold"])
 
@@ -326,12 +343,23 @@ class DriverMonitor:
         except ImportError:  # ultralytics not installed -> feature off
             return None
 
+    @staticmethod
+    def _load_pose(cfg):
+        w = cfg.pose_weights or POSE_WEIGHTS
+        try:
+            from .perception.pose import HeadPoseDetector
+
+            return HeadPoseDetector(w) if Path(w).exists() else None
+        except ImportError:
+            return None
+
     def models_info(self) -> dict:
         return {
             "landmarks": "MediaPipe Face Landmarker (478 pts, 52 blendshapes)",
             "emotion": getattr(self.emotion_model, "name", None),
             "eye": self.eye_model.name if self.eye_model else "geometric eye aspect ratio (no eye CNN loaded)",
             "objects": getattr(self.object_model, "name", None),
+            "side_view": getattr(self.head_model, "name", None),
             "cabin": "CabinNet (trained)" if self.cabin_model is not None else None,
             "temporal": f"{type(self.temporal_model).__name__.replace('Drowsiness', '')} temporal model (trained)" if self.temporal_model is not None else None,
             "drowsy_frame": "frame-level drowsiness CNN (trained)" if self.drowsy_model is not None else None,
@@ -356,6 +384,10 @@ class DriverMonitor:
         self._last_t = None
         self._audio = None
         self._gen += 1
+        self.head_cal = HeadCalibrator(self.cfg.calib_seconds)
+        self._head, self._head_t, self._face_seen_t, self._side_eye_p = None, -1e9, -1e9, None
+        if self.head_model is not None:
+            self.head_model.reset()
         self.jolt.reset()
         if self.mishap is not None:
             self.mishap = MishapDetector()
@@ -388,11 +420,13 @@ class DriverMonitor:
         self.timings[name] = ms if name not in self.timings else 0.8 * self.timings[name] + 0.2 * ms
         return out
 
-    def _schedule_models(self, frame: np.ndarray, obs, t: float):
+    def _schedule_models(self, frame: np.ndarray, obs, t: float, side: bool = False):
         """Decide which learned models are due and run them (now, or in the background)."""
         if self._worker is not None and self._worker.busy:
             return  # still working on an earlier frame: use its latest outputs
         due = []
+        if side and self.head_model is not None and self._thr_head.ready(t):
+            due.append("head")
         if obs is not None and self.eye_model is not None and self._thr_eye.ready(t):
             due.append("eye")
         if obs is not None and self.emotion_model is not None and self._thr_face.ready(t):
@@ -413,7 +447,7 @@ class DriverMonitor:
         gen = self._gen
 
         def job():
-            out = self._run_models(due, frame, lm, seq)
+            out = self._run_models(due, frame, lm, seq, t)
             if gen == self._gen:  # not reset meanwhile
                 for k, v in out.items():
                     setattr(self, k, v)
@@ -423,8 +457,14 @@ class DriverMonitor:
         else:
             self._worker.submit(job)
 
-    def _run_models(self, due, frame, lm, seq) -> dict:
+    def _run_models(self, due, frame, lm, seq, t: float = 0.0) -> dict:
         out = {}
+        if "head" in due:
+            h = self._timed("head keypoints (side view)", lambda: self.head_model(frame))
+            out["_head"], out["_head_t"] = h, t
+            out["_side_eye_p"] = None
+            if h is not None and self.eye_model is not None and (b := h.eye_box(frame.shape)) is not None:
+                out["_side_eye_p"] = self._timed("eye CNN", lambda: self.eye_model.on_crop(crop(frame, b)))
         if "eye" in due:
             out["_eye_p"] = self._timed("eye CNN", lambda: self.eye_model(frame, lm))
         if "emotion" in due:
@@ -459,13 +499,22 @@ class DriverMonitor:
         audio_groups = self._audio.groups if (self._audio is not None and t - self._audio.t < 2.0) else None
 
         # --- learned per-frame models (throttled; in the background when async) --
+        if obs is not None:
+            self._face_seen_t = t
         if obs is None:
             self._eye_p = self._emotion_p = None
-        self._schedule_models(frame, obs, t)
+        # no frontal face for a moment: side/diagonal camera (or head turned far) -> track the head by keypoints
+        side = obs is None and self.head_model is not None and t - self._face_seen_t > 0.7
+        self._schedule_models(frame, obs, t, side)
+        head = self._head if side and self._head is not None and t - self._head_t < 1.0 else None
+        mode = "face" if obs is not None else "side" if head is not None else "none"
+        if face_box is None and head is not None:
+            face_box = head.face_box(frame.shape)
         behaviours = behaviour_scores(self._dets, face_box, frame.shape)
+        driver_seen = obs is not None or head is not None
 
         res = FrameResult(t=t, calibrating=None, features=feats, risk=None, obs=obs, fps=self._fps,
-                          detections=self._dets, behaviours=behaviours, face_box=face_box,
+                          detections=self._dets, behaviours=behaviours, face_box=face_box, mode=mode, head=head,
                           audio=self._audio.as_dict() if self._audio is not None else None)
         if self._emotion_p is not None:
             k = int(np.argmax(self._emotion_p))
@@ -474,36 +523,55 @@ class DriverMonitor:
             k = int(np.argmax(self._cabin_p))
             res.cabin, res.cabin_conf = CABIN_CLASSES[k], float(self._cabin_p[k])
 
-        # --- calibration -------------------------------------------------------
-        if not self.calibrator.done:
+        # --- calibration: learns the driver's normal position from whatever angle the camera has ---
+        if obs is not None and not self.calibrator.done:
             self.calibrator.update(t, feats)
-            if not self.calibrator.done:
-                res.calibrating = self.calibrator.progress(t)
-                return res
-        prof = self.profile
+        if head is not None and not self.head_cal.done:
+            self.head_cal.update(t, head.droop)
+        if mode == "face" and not self.calibrator.done:
+            res.calibrating = self.calibrator.progress(t)
+            return res
+        if mode == "side" and not self.head_cal.done:
+            res.calibrating = self.head_cal.progress(t)
+            return res
+        if mode == "none" and not (self.calibrator.done or self.head_cal.done):
+            res.calibrating = 0.0  # still looking for the driver: no risk shown, nothing is "safe" yet
+            return res
+        prof = self.profile or DriverProfile()
 
         # --- temporal indicators ----------------------------------------------
         frontal = feats.face and self._frontal(feats, prof)
         if frontal:
             self.eyes.update(t, feats.ear, prof, self._eye_p)
             self.yawn.update(t, feats.mar, feats.jaw_open_bs)
+        elif head is not None and self._side_eye_p is not None:
+            self.eyes.update(t, float("nan"), prof, self._side_eye_p)  # visible eye from the side
+            self.yawn.pause()
         else:
             self.eyes.pause()
             self.yawn.pause()
+        if head is not None and self.head_cal.done:
+            res.head_drop = head.droop - self.head_cal.droop0
+            self.nod.update(t, res.head_drop)
+        elif obs is not None:
+            self.nod.pause()
+        res.nodding, res.nods = self.nod.nodding, self.nod.count()
         if feats.face:
             self.seq.update(t, feats.vector(), prof)
         self.window.update(t, feats, frontal, obs, frame.shape[1])
-        g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=feats.face)
+        # side view: no gaze angles, but the driver is there (not "looking away")
+        g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=driver_seen)
 
         if self._alert_p is not None:
             names = ALERTNESS_CLASSES if len(self._alert_p) == 3 else ("alert", "drowsy")
             res.alertness = names[int(np.argmax(self._alert_p))]
 
+        eyes_judged = frontal or (head is not None and self._side_eye_p is not None)
         res.perclos, res.blink_rate, res.yawns = self.eyes.perclos(), self.eyes.blink_rate(), self.yawn.count()
         res.risk = self.fusion.update(
             t,
             RiskInputs(
-                face=feats.face,
+                face=driver_seen,
                 perclos=res.perclos,
                 microsleep=self.eyes.in_microsleep,
                 closed_duration=self.eyes.closed_duration,
@@ -519,24 +587,28 @@ class DriverMonitor:
                 emotion_probs=self._emotion_p,
                 behaviours=behaviours,
                 audio_groups=audio_groups,
+                head_nod=res.nodding,
+                nods_5min=res.nods,
+                head_drop=res.head_drop,
             ),
         )
         res.off_road, res.off_road_duration = g.off_road, g.off_road_duration
-        res.eye_cnn_closed, res.eye_closed = self._eye_p, bool(frontal and self.eyes.last_closed)
-        res.eyes_measurable = bool(frontal)
+        res.eye_cnn_closed = self._eye_p if obs is not None else self._side_eye_p
+        res.eye_closed = bool(eyes_judged and self.eyes.last_closed)
+        res.eyes_measurable = bool(eyes_judged)
         res.eye_closed_duration = self.eyes.closed_duration
         if feats.face and not np.isnan(feats.ear):
             res.eye_openness = self.eyes.openness(feats.ear, prof)
         mishap_events = []
         if self.mishap is not None:
-            res.mishap = self.mishap.update(t, jolt=jolt, audio_groups=audio_groups, face=feats.face,
-                                           eyes_closed=bool(frontal and self.eyes.last_closed))
+            res.mishap = self.mishap.update(t, jolt=jolt, audio_groups=audio_groups, face=driver_seen,
+                                           eyes_closed=bool(res.eye_closed or res.nodding))
             mishap_events = self.mishap.pop_events()
         res.alerts = self.alerter.update(
             t, risk=res.risk, microsleep=self.eyes.in_microsleep, closed_duration=self.eyes.closed_duration,
             long_distraction=g.long_distraction, vats=g.vats_distraction, off_road_duration=g.off_road_duration,
-            yawns_5min=res.yawns, face=feats.face, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
-            behaviours=behaviours, audio_groups=audio_groups, mishap_events=mishap_events,
+            yawns_5min=res.yawns, face=driver_seen, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
+            behaviours=behaviours, audio_groups=audio_groups, mishap_events=mishap_events, head_nod=res.nodding,
         )
         self.recorder.update(res, res.alerts, behaviours, g.off_road_duration, self.eyes.closed_duration)
         return res

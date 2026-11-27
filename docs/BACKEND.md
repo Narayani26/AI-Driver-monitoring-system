@@ -18,7 +18,7 @@ The in-car app does all detection on the device and works with no internet. The 
  * samples only with the driver's opt-in                          └─────────────────────────────────────────┘
 ```
 
-## Run it (Mac)
+## Run it on the Mac (SQLite, nothing to install)
 
 The backend runs in its own terminal (terminal 1):
 ```bash
@@ -45,16 +45,44 @@ To make yourself an admin, which shows the training-data quality panel:
 python -m dms.cloud.app --make-admin you@example.com
 ```
 
-## Database
+## Database: what is used and how it works
 
-SQLite (`~/.dms/cloud.db`) by default. For production, use PostgreSQL:
+The backend talks to its database through **SQLAlchemy**, the standard Python database toolkit. The code describes the tables once (`dms/cloud/db.py`). SQLAlchemy turns every read and write into SQL for whichever database `DMS_DATABASE_URL` points to, so the **same code runs on SQLite and on PostgreSQL**. Nothing in the app changes; only that one setting does.
+
+| Where | Database | How to choose it |
+|---|---|---|
+| Laptop demo | **SQLite**: a real SQL database stored in one file, `~/.dms/cloud.db`. No server to install. | default (nothing to set) |
+| Your own server | **PostgreSQL 16** in Docker, next to the backend | `docker compose up -d` (below) |
+| Managed cloud | **Supabase**, AWS RDS, Google Cloud SQL, Neon…: all of them *are* PostgreSQL | `DMS_DATABASE_URL=<their connection string>` |
+
+The tables are created automatically on first start. The same 7 backend tests run on both SQLite and a real PostgreSQL 16 server: locally, and in GitHub CI as a separate `postgres` job.
+
+### Option A: PostgreSQL with Docker Compose (one command)
+Create the settings file:
 ```bash
-pip install "psycopg[binary]"
+cp .env.example .env
 ```
+Open `.env` and replace both values with random ones:
 ```bash
-DMS_DATABASE_URL=postgresql+psycopg://user:pass@host/dms DMS_CLOUD_SECRET=<random 32+ chars> python -m dms.cloud.app --host 0.0.0.0
+openssl rand -hex 32
 ```
-Put it behind HTTPS (a reverse proxy such as Caddy or nginx, or a managed platform).
+Start the database and the backend:
+```bash
+docker compose up -d
+```
+The dashboard is at http://localhost:9000. The database is only reachable by the backend container: no port is opened to the outside. Its data lives in the `pgdata` volume and survives restarts.
+
+### Option B: Supabase (hosted PostgreSQL, free tier)
+1. Create a project at supabase.com. In the project's **Connect** dialog (or Project Settings → Database), copy the **connection string (URI)**. Use the *session* pooler or the direct connection.
+2. In that string, change the start `postgresql://` to `postgresql+psycopg://` (this tells SQLAlchemy which driver to use). If the string has no `?sslmode=require`, add it at the end.
+3. Run the backend with that string:
+   ```bash
+   DMS_DATABASE_URL="postgresql+psycopg://postgres.<project>:<password>@<host>:5432/postgres?sslmode=require" DMS_CLOUD_SECRET=<random> python -m dms.cloud.app
+   ```
+
+The tables appear in Supabase's Table Editor (`users`, `devices`, `trips`, `events`, `samples`). This uses Supabase only as a PostgreSQL database: logins stay in our own backend, so nothing depends on Supabase-specific features. Turn on Row Level Security for the tables in Supabase anyway, so that its public REST API exposes nothing; our backend connects as the database owner and is not affected.
+
+### What is stored
 
 | Table | What | Notes |
 |---|---|---|
@@ -65,6 +93,10 @@ Put it behind HTTPS (a reverse proxy such as Caddy or nginx, or a managed platfo
 | samples | 30 s window of numeric face measurements + label | only with consent; quality-checked; rejection reason kept |
 
 There is **no column for images, video or audio** anywhere: footage never leaves the car.
+
+### Two databases, two jobs
+- **In the car**, a small SQLite file (`~/.dms/events.db`) holds alerts, trips and samples while there is no internet. It works offline and survives power loss (WAL mode).
+- **In the cloud**, PostgreSQL holds every user's data. The car's Syncer sends its local rows there when online, then marks them as sent.
 
 ## The retraining loop (how the models get better from real drives)
 

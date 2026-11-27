@@ -99,7 +99,13 @@ def serialize(r: FrameResult, shape, proc_ms: float, timings: dict | None = None
         "risk": None if rk is None else {"index": round(rk.index, 1), "level": rk.level, "drowsiness": round(rk.drowsiness, 3), "distraction": round(rk.distraction, 3), "affect": round(rk.affect, 3), "reasons": rk.reasons},
         "alerts": [a.as_dict() for a in r.alerts],
         "timings": {k: round(v, 1) for k, v in (timings or {}).items()},
+        "mode": r.mode,
+        "head_drop": _num(r.head_drop, 3),
+        "nodding": r.nodding,
+        "nods": r.nods,
     }
+    if r.head is not None:  # side view: nose, eye, ear, shoulders for the overlay
+        out["head_pts"] = [[round(float(x), 1), round(float(y), 1)] for x, y, c in r.head.kp[:7] if c >= 0.5]
     if r.obs is not None:
         lm = r.obs.landmarks
         out["eyes"] = [lm[list(idx), :2].round(1).tolist() for idx in (LEFT_EYE, RIGHT_EYE)]

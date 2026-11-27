@@ -17,7 +17,9 @@ weights/*.pt
 !weights/face_landmarker.task
 !weights/emotion_enet_b0_8.onnx
 !weights/yolo11n.pt
+!weights/yolo11n-pose.pt
 # Kaggle output zips unpacked in the project by mistake (move their contents into runs/ etc.)
 /dms_runs*/
 /dms_temporal*/
 /runs_*/
+.env

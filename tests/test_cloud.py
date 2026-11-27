@@ -8,10 +8,18 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    """SQLite by default; set DMS_TEST_DATABASE_URL=postgresql+psycopg://... to run the same tests on PostgreSQL."""
+    import os
+
     monkeypatch.setenv("DMS_CLOUD_DIR", str(tmp_path))
     from dms.cloud.app import create_app
+    from dms.cloud.db import Base, make_engine
 
-    url = f"sqlite:///{tmp_path / 'cloud.db'}"
+    url = os.environ.get("DMS_TEST_DATABASE_URL") or f"sqlite:///{tmp_path / 'cloud.db'}"
+    if url.startswith("postgresql"):
+        eng = make_engine(url)
+        Base.metadata.drop_all(eng)  # clean slate for every test
+        eng.dispose()
     c = TestClient(create_app(url))
     c.db_url = url
     return c

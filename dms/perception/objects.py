@@ -88,7 +88,7 @@ def behaviour_scores(dets: list[Detection], face_box: tuple[int, int, int, int] 
     if face_box is not None:
         fx0, fy0, fx1, fy1 = face_box
         fw, fh = fx1 - fx0, fy1 - fy0
-        roi = (fx0 - 1.5 * fw, fy0 - 0.5 * fh, fx1 + 1.5 * fw, fy1 + 2.5 * fh)
+        roi = (fx0 - 2.5 * fw, fy0 - 1.0 * fh, fx1 + 2.5 * fw, fy1 + 3.0 * fh)  # head, hands and lap area of the driver
     for d in dets:
         if face_box is not None:
             if d.behaviour == "phone" and _inside_frac(face_box, d.box) >= 0.8 and _area(d.box) > 1.5 * _area(face_box):

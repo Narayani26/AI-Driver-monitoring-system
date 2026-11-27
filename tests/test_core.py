@@ -686,3 +686,27 @@ def test_driver_is_tracked_and_passengers_ignored():
     # passenger leans in close (now a bit bigger), but we keep following the driver's position
     leaning = face(500, 230, 175)
     assert select_driver([leaning, driver], (300, 250), 640) == 1
+
+
+def test_head_from_side_view_keypoints_and_nod():
+    """Side camera: no frontal face, but nose/eye/ear keypoints give a head-drop measure."""
+    from dms.features.temporal import HeadCalibrator, HeadNodTracker
+    from dms.perception.pose import head_from_keypoints
+
+    kp = np.zeros((17, 3), np.float32)
+    kp[0] = (560, 227, 0.9)  # nose
+    kp[2] = (520, 190, 0.95)  # visible eye
+    kp[4] = (400, 260, 0.99)  # ear
+    h = head_from_keypoints(kp, (300, 100, 700, 600))
+    assert h is not None and h.eye == (520.0, 190.0) and h.droop < 0  # nose above the ear: head up
+    cal, nod = HeadCalibrator(duration=2.0), HeadNodTracker(min_s=1.5)
+    for i in range(30):
+        cal.update(i / 10, h.droop)
+    assert cal.done
+    for i in range(10):  # brief dip: no nod
+        nod.update(i / 10, 0.3)
+    nod.update(1.0, 0.0)
+    assert nod.count() == 0
+    for i in range(20):  # head held down 2 s: a nod
+        nod.update(2 + i / 10, 0.35)
+    assert nod.nodding and nod.count() == 1

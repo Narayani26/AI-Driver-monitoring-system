@@ -38,6 +38,11 @@ It works offline. Pretrained models are used until you train your own; add check
 * `--sensitivity low|normal|high`: how quickly alerts fire (also switchable in the page); a female alert voice is chosen by default and can be changed in the page.
 * `--face-ckpt runs/face/best.pt`: use your trained eye-state network (fused with eye geometry) and optionally `--emotion trained`.
 
+**Any camera angle:** there is no "look at the camera" step. The first seconds learn the driver's normal position *as the camera sees it*: front, diagonal or side mount.
+- **Frontal and diagonal cameras:** MediaPipe face landmarks give eye closure, yawns and gaze.
+- **Side cameras (90° profile):** MediaPipe finds no face there, so the system switches to body-pose head tracking (YOLO11n-pose). It detects head nodding (the nose dropping relative to the ear) and checks the visible eye with the eye-state CNN.
+- **Status:** the panel shows the current mode. Until a driver is found it says "Looking for the driver…", never "safe".
+
 **Security and offline:** loopback-only by default, access token when exposed (`--host 0.0.0.0`), Origin/Host checks, model checksums, no footage stored, offline event store with store-and-forward sync (`--sync-url`). See [SECURITY.md](docs/SECURITY.md) and [PRODUCTION.md](docs/PRODUCTION.md).
 
 **Command-line / demo videos for slides**

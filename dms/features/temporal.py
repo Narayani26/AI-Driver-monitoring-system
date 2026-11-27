@@ -81,6 +81,74 @@ class Calibrator:
         return self.profile
 
 
+class HeadCalibrator:
+    """Side/diagonal cameras: learns the driver's normal head position (how far the nose sits
+    below/above the ear, in head lengths) from whatever angle the camera has. Median, so a
+    glance or two during calibration doesn't matter."""
+
+    def __init__(self, duration: float = 10.0, min_samples: int = 20):
+        self.duration, self.min_samples = duration, min_samples
+        self._t0: float | None = None
+        self._vals: list[float] = []
+        self.droop0: float | None = None
+
+    @property
+    def done(self) -> bool:
+        return self.droop0 is not None
+
+    def progress(self, t: float) -> float:
+        return 0.0 if self._t0 is None else min(1.0, (t - self._t0) / self.duration)
+
+    def update(self, t: float, droop: float):
+        if self.done:
+            return
+        self._t0 = t if self._t0 is None else self._t0
+        self._vals.append(droop)
+        if t - self._t0 >= self.duration and len(self._vals) >= self.min_samples:
+            self.droop0 = float(np.median(self._vals))
+
+
+class HeadNodTracker:
+    """Head dropping forward (nodding off), measured from any camera angle.
+
+    `delta`: how far the nose must drop relative to the ear, in head lengths, beyond the
+    driver's own normal position (measured on a falling-asleep clip: alert -0.15, nodding +0.25).
+    A nod held for `min_s` is a microsleep-equivalent event."""
+
+    def __init__(self, delta: float = 0.25, min_s: float = 1.5, window_s: float = 300.0):
+        self.delta, self.min_s, self.window_s = delta, min_s, window_s
+        self._since: float | None = None
+        self._counted = False
+        self._nods: deque[float] = deque()
+        self.nodding = False
+        self._last = 0.0
+
+    def update(self, t: float, rel_droop: float) -> bool:
+        self._last = t
+        down = rel_droop >= self.delta
+        if down:
+            self._since = t if self._since is None else self._since
+            if not self._counted and t - self._since >= self.min_s:
+                self._nods.append(t)
+                self._counted = True
+        else:
+            self._since, self._counted = None, False
+        self.nodding = down and self._since is not None and t - self._since >= self.min_s
+        while self._nods and t - self._nods[0] > self.window_s:
+            self._nods.popleft()
+        return self.nodding
+
+    def pause(self):
+        self._since, self._counted, self.nodding = None, False, False
+
+    @property
+    def duration(self) -> float:
+        return 0.0 if self._since is None else self._last - self._since
+
+    def count(self) -> int:
+        return len(self._nods)
+
+
 # --------------------------------------------------------------------------- #
 # Eye closure: blinks, PERCLOS, microsleep
 # --------------------------------------------------------------------------- #
@@ -117,10 +185,13 @@ class EyeClosureTracker:
         is confident (> 0.7 closed, < 0.3 open); the geometric EAR test settles
         the uncertain middle."""
         if np.isnan(ear):
-            return
-        closed = self.openness(ear, profile) < self.closed_frac
-        if p_closed is not None:
-            closed = p_closed > 0.7 or (p_closed >= 0.3 and closed)
+            if p_closed is None:
+                return
+            closed = p_closed > 0.7  # no eye contour (side view): only a confident eye-state CNN counts
+        else:
+            closed = self.openness(ear, profile) < self.closed_frac
+            if p_closed is not None:
+                closed = p_closed > 0.7 or (p_closed >= 0.3 and closed)
         self.last_closed = closed
         self._samples.append((t, closed))
         while self._samples and t - self._samples[0][0] > self.window_s:

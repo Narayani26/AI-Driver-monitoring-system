@@ -77,7 +77,12 @@ function onResult(r) {
   $("perf").textContent = `${r.proc_ms.toFixed(0)} ms/frame · ${r.fps ? r.fps.toFixed(0) : "–"} FPS`;
 
   const cal = $("calib");
-  if (r.calibrating != null) { cal.classList.remove("hidden"); $("calib-bar").style.width = (r.calibrating * 100).toFixed(0) + "%"; }
+  if (r.calibrating != null) {
+    cal.classList.remove("hidden"); $("calib-bar").style.width = (r.calibrating * 100).toFixed(0) + "%";
+    $("calib-text").textContent = r.mode === "none" ? "Looking for the driver… make sure the camera can see the driver's head"
+      : r.mode === "side" ? "Side view: learning the driver's normal head position — just drive normally"
+      : "Learning the driver's normal position — just drive normally";
+  }
   else cal.classList.add("hidden");
 
   updateStats(r);
@@ -185,6 +190,10 @@ function drawOverlay(img, r) {
     for (const eye of r.eyes) poly(g, eye);
   }
   if (r.mouth) { g.strokeStyle = "rgba(88,166,255,.8)"; g.lineWidth = lw * 0.7; poly(g, r.mouth); }
+  if (r.head_pts) { // side view: head keypoints (nose, eyes, ears, shoulders)
+    g.fillStyle = r.nodding ? "#ff5a5a" : "#4ade80";
+    for (const [x, y] of r.head_pts) { g.beginPath(); g.arc(x, y, lw * 2.2, 0, 2 * Math.PI); g.fill(); }
+  }
   for (const d of r.detections || []) {
     const [x0, y0, x1, y1] = d.box;
     g.setLineDash(d.active ? [] : [6, 4]);
@@ -201,7 +210,7 @@ function drawOverlay(img, r) {
   const head = r.calibrating != null ? "CALIBRATING" : (r.risk ? `${lvl} · risk ${r.risk.index.toFixed(0)}` : "");
   g.fillText(head, 14, fs * 1.2);
   g.font = `${fs * 0.75}px system-ui, sans-serif`; g.fillStyle = "#e6edf3";
-  const right = r.face ? (r.emotion ? `${r.emotion} ${(r.emotion_conf * 100).toFixed(0)}%` : "") : "no face";
+  const right = r.face ? (r.emotion ? `${r.emotion} ${(r.emotion_conf * 100).toFixed(0)}%` : "") : r.mode === "side" ? "side view" : "no driver";
   g.fillText(right, r.w - g.measureText(right).width - 10, fs * 1.15);
   // live timers
   const timers = [];
@@ -234,7 +243,11 @@ function updateStats(r) {
     $("risk-num").textContent = "…"; $("risk-level").textContent = "CALIBRATING";
   }
   const f = r.features;
-  if (!r.face) { setText("s-eyes", "no face", "v warn"); $("s-eyes-sub").textContent = ""; }
+  if (r.mode === "side") {
+    const c = r.eye_cnn_closed;
+    setText("s-eyes", r.eyes_measurable ? (r.eye_closed ? "CLOSED" : "open") : "side view", r.eye_closed ? "v bad" : r.eyes_measurable ? "v good" : "v");
+    $("s-eyes-sub").textContent = c != null ? `visible eye · CNN closed ${(c * 100).toFixed(0)}%` : "tracking the head from the side";
+  } else if (!r.face) { setText("s-eyes", r.mode === "none" ? "no driver" : "no face", "v warn"); $("s-eyes-sub").textContent = ""; }
   else if (r.eyes_measurable === false) {
     setText("s-eyes", "not judged", "v");
     $("s-eyes-sub").textContent = "head tilted/turned: eye shape unreliable, attention tracking instead";
@@ -250,14 +263,18 @@ function updateStats(r) {
   setText("s-yawns", String(r.yawns ?? 0), r.yawns >= 3 ? "v bad" : r.yawns >= 1 ? "v warn" : "v good");
   $("s-mouth").textContent = f.jaw_open_bs != null ? `jaw open ${(f.jaw_open_bs * 100).toFixed(0)}%` : (f.mar != null ? `MAR ${f.mar.toFixed(2)}` : "");
   if (r.calibrating != null) setText("s-attn", "…", "v");
+  else if (r.mode === "side") setText("s-attn", r.nodding ? "HEAD DROPPING" : (r.head_drop ?? 0) > 0.18 ? "head lowering" : "head up",
+    r.nodding ? "v bad" : (r.head_drop ?? 0) > 0.18 ? "v warn" : "v good");
   else setText("s-attn", r.off_road ? `away ${r.off_road_s.toFixed(1)}s` : "on road", r.off_road ? (r.off_road_s > 2 ? "v bad" : "v warn") : "v good");
-  $("s-pose").textContent = f.yaw != null ? `yaw ${f.yaw.toFixed(0)}° · pitch ${f.pitch.toFixed(0)}°` : "";
+  $("s-pose").textContent = r.mode === "side" ? (r.head_drop != null ? `head drop ${r.head_drop.toFixed(2)} · nods ${r.nods ?? 0}` : "side view")
+    : f.yaw != null ? `yaw ${f.yaw.toFixed(0)}° · pitch ${f.pitch.toFixed(0)}°` : "";
   const beh = Object.entries(r.behaviours || {}).filter(([, v]) => v >= 0.5);
-  setText("s-beh", beh.length ? beh.map(([k]) => k.replace("_", " ")).join(", ") : "safe", beh.length ? "v bad" : "v good");
+  if (r.mode === "none" || r.calibrating != null) setText("s-beh", beh.length ? beh.map(([k]) => k.replace("_", " ")).join(", ") : "–", beh.length ? "v bad" : "v");
+  else setText("s-beh", beh.length ? beh.map(([k]) => k.replace("_", " ")).join(", ") : "safe", beh.length ? "v bad" : "v good");
   $("s-beh-sub").textContent = r.alertness ? `temporal model: ${r.alertness.replace("_", " ")}` : `${(r.detections || []).length} object(s) seen`;
   // emotion bars
   const p = r.emotion_probs;
-  $("emo-top").textContent = p ? `${r.emotion} (${(r.emotion_conf * 100).toFixed(0)}%)` : (r.face ? "model not loaded" : "no face");
+  $("emo-top").textContent = p ? `${r.emotion} (${(r.emotion_conf * 100).toFixed(0)}%)` : (r.face ? "model not loaded" : r.mode === "side" ? "needs a frontal face" : "no face");
   $("emo-bars").innerHTML = EMO.map((e) => {
     const v = p ? p[e] : 0;
     return `<div class="row ${p && e === r.emotion ? "top" : ""}"><span>${e}</span><div class="hbar"><div style="width:${(v * 100).toFixed(0)}%"></div></div><b>${(v * 100).toFixed(0)}%</b></div>`;

@@ -39,3 +39,13 @@ class EyeStateCNN:
         with self.torch.inference_mode():
             p = self.torch.softmax(self.model(to_batch(crops, self.size))["eye"] / self.temperature, -1)[:, CLOSED]
         return float(p.mean())
+
+    def on_crop(self, eye_img: np.ndarray) -> float | None:
+        """P(closed) for one eye crop (side view: the visible eye found by the pose model)."""
+        from ..data.transforms import to_batch
+
+        if eye_img is None or eye_img.size == 0 or min(eye_img.shape[:2]) < 6:
+            return None
+        g = cv2.cvtColor(eye_img, cv2.COLOR_BGR2GRAY)
+        with self.torch.inference_mode():
+            return float(self.torch.softmax(self.model(to_batch([g], self.size))["eye"] / self.temperature, -1)[0, CLOSED])

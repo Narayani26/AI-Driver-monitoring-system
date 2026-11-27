@@ -28,7 +28,7 @@
     <input type="file" id="file-input" accept="video/*" hidden>
     <input type="text" id="stream-url" class="hidden" placeholder="rtsp://192.168.1.254/live  or  http://phone-ip:8080/video">
     <button id="start" class="btn primary">Start</button>
-    <button id="recal" class="btn" title="Look straight at the road for a few seconds">Recalibrate</button>
+    <button id="recal" class="btn" title="Re-learn the driver's normal position (any camera angle)">Recalibrate</button>
     <span class="spacer"></span>
     <label class="toggle"><input type="checkbox" id="opt-voice" checked> Voice</label>
     <select id="voice-select" class="select" title="Alert voice"></select>
@@ -59,7 +59,7 @@
         <div class="stage" id="ai-stage">
           <canvas id="ai-canvas"></canvas>
           <div id="calib" class="calib hidden">
-            <div>Calibrating — look straight ahead at the road</div>
+            <div id="calib-text">Learning the driver's normal position — just drive normally</div>
             <div class="bar"><div id="calib-bar"></div></div>
           </div>
           <div id="toast" class="toast hidden"><div class="toast-title"></div><div class="toast-sub"></div></div>

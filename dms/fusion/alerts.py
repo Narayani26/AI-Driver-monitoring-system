@@ -14,6 +14,7 @@ SEVERITY = {"info": 0, "caution": 1, "warning": 2, "critical": 3}
 
 MESSAGES = {
     "microsleep": ("critical", "alarm", "Wake up! Your eyes were closed.", "Pull over safely as soon as possible. Do not continue driving while this tired."),
+    "head_nod": ("critical", "alarm", "Wake up! Your head is dropping.", "You are nodding off. Pull over safely as soon as possible and rest."),
     "drowsy": ("warning", "chime", "You seem drowsy.", "Take a 15 to 20 minute break at the next safe stop. A coffee followed by a short nap works best."),
     "yawning": ("caution", "soft", "Frequent yawning detected.", "Get some fresh air and plan a break soon."),
     "eyes_off_road": ("warning", "chime", "Please look ahead at the road.", "Keep your eyes on the road. Glance at mirrors and screens for under two seconds."),
@@ -97,7 +98,7 @@ class AlertManager:
     def update(self, t: float, *, risk, microsleep: bool, closed_duration: float, long_distraction: bool, vats: bool,
                off_road_duration: float, yawns_5min: int, face: bool, alertness: str | None, emotion_probs_affect: float,
                behaviours: dict[str, float], audio_groups: dict[str, float] | None = None,
-               mishap_events: list[tuple[float, str, str]] = ()) -> list[Alert]:
+               mishap_events: list[tuple[float, str, str]] = (), head_nod: bool = False) -> list[Alert]:
         out: list[Alert] = []
 
         def add(a):
@@ -106,10 +107,12 @@ class AlertManager:
 
         if microsleep:
             add(self._fire("microsleep", t, f"eyes closed {closed_duration:.1f}s"))
+        elif head_nod:
+            add(self._fire("head_nod", t))
         # alertness (temporal model) is already inside risk.drowsiness as supporting evidence;
         # it no longer triggers the alert on its own
         drowsy = risk is not None and risk.drowsiness >= self.drowsy_threshold
-        if self._sustained("drowsy", drowsy and not microsleep, t, 4.0):
+        if self._sustained("drowsy", drowsy and not microsleep and not head_nod, t, 4.0):
             add(self._fire("drowsy", t, f"drowsiness {risk.drowsiness:.0%}"))
         if yawns_5min >= 3:
             add(self._fire("yawning", t, f"{yawns_5min} yawns in 5 min"))
