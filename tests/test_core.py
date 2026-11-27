@@ -651,3 +651,38 @@ def test_async_models_keep_frames_fast():
     assert _t.perf_counter() - t0 < 0.05
     w.wait()
     assert not w.busy
+
+
+def test_phone_held_in_front_of_face_counts():
+    from dms.perception.objects import Detection, behaviour_scores
+
+    face = (100, 100, 200, 220)
+    partly_covering = Detection("cell phone", "phone", 0.7, (150, 80, 240, 260))  # covers half the face
+    assert behaviour_scores([partly_covering], face, (480, 640)) == {"phone": 0.7}
+
+
+def test_eyes_not_judged_when_head_tilted():
+    """From a low webcam, tilting the head back makes open eyes look closed: no microsleep then."""
+    from dms.features.temporal import DriverProfile, EyeClosureTracker
+
+    prof, eyes = DriverProfile(ear_open=0.3), EyeClosureTracker()
+    for i in range(30):  # 3 s of 'closed-looking' eyes while the head is tilted -> paused each frame
+        eyes.pause()
+    assert not eyes.in_microsleep and eyes.closed_duration == 0.0
+    for i in range(30):  # really closed with the head straight -> microsleep
+        eyes.update(i / 10, 0.05, prof)
+    assert eyes.in_microsleep
+
+
+def test_driver_is_tracked_and_passengers_ignored():
+    from dms.perception.face import select_driver
+
+    def face(cx, cy, size):
+        g = np.stack(np.meshgrid(np.linspace(-1, 1, 5), np.linspace(-1, 1, 5)), -1).reshape(-1, 2) * size / 2
+        return np.c_[g + (cx, cy), np.zeros(len(g))].astype(np.float32)
+
+    driver, back_seat = face(300, 250, 160), face(520, 180, 70)
+    assert select_driver([back_seat, driver], None, 640) == 1  # biggest face = driver
+    # passenger leans in close (now a bit bigger), but we keep following the driver's position
+    leaning = face(500, 230, 175)
+    assert select_driver([leaning, driver], (300, 250), 640) == 1

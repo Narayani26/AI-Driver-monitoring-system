@@ -121,8 +121,8 @@ class RiskFusion:
             m = sum(v * w for v, w in learned) / sum(w for _, w in learned)
             measured = s
             s = max(measured, self.learned_cap * m)  # alone: at most a caution
-            if measured >= 0.25:  # measured signs present: the models may confirm and strengthen them
-                s = max(s, 0.6 * measured + 0.4 * m)
+            if measured >= 0.25:  # measured signs present: the models may confirm them, adding at most
+                s = max(s, measured + (1.0 - measured) * 0.3 * m)  # 30% of the remaining headroom
         return s
 
     def _distraction(self, t: float, r: RiskInputs, reasons: list[str]) -> float:

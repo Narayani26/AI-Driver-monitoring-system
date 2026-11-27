@@ -41,7 +41,7 @@ def _behaviour(name: str) -> str | None:
 
 
 class ObjectDetector:
-    def __init__(self, weights: str | Path = WEIGHTS, conf: float = 0.35, imgsz: int = 480, device: str | None = None):
+    def __init__(self, weights: str | Path = WEIGHTS, conf: float = 0.25, imgsz: int = 480, device: str | None = None):
         from ultralytics import YOLO
 
         self.model = YOLO(str(weights))
@@ -60,6 +60,16 @@ class ObjectDetector:
         return out
 
 
+def _area(b) -> float:
+    return max(b[2] - b[0], 0) * max(b[3] - b[1], 0)
+
+
+def _inside_frac(inner, outer) -> float:
+    """Fraction of `inner`'s area that lies inside `outer`."""
+    x0, y0, x1, y1 = max(inner[0], outer[0]), max(inner[1], outer[1]), min(inner[2], outer[2]), min(inner[3], outer[3])
+    return _area((x0, y0, x1, y1)) / max(_area(inner), 1e-6)
+
+
 def contains(box, pt) -> bool:
     return box[0] <= pt[0] <= box[2] and box[1] <= pt[1] <= box[3]
 
@@ -67,8 +77,9 @@ def contains(box, pt) -> bool:
 def behaviour_scores(dets: list[Detection], face_box: tuple[int, int, int, int] | None, frame_shape) -> dict[str, float]:
     """Per-behaviour confidence for the driver.
 
-    * A phone whose box contains the face centre is a *screen showing a face*
-      (e.g. playing footage to the webcam in a demo), not phone use -> ignored.
+    * A phone whose box holds (almost) the whole face and is much bigger than it is a
+      *screen showing a face* (e.g. footage played to the webcam in a demo) -> ignored.
+      A phone held up in front of part of the face is phone use and counts.
     * With a face, objects far from the head/upper-body region are ignored
       (a phone lying on the passenger seat is not phone use).
     """
@@ -77,11 +88,10 @@ def behaviour_scores(dets: list[Detection], face_box: tuple[int, int, int, int] 
     if face_box is not None:
         fx0, fy0, fx1, fy1 = face_box
         fw, fh = fx1 - fx0, fy1 - fy0
-        centre = ((fx0 + fx1) / 2, (fy0 + fy1) / 2)
         roi = (fx0 - 1.5 * fw, fy0 - 0.5 * fh, fx1 + 1.5 * fw, fy1 + 2.5 * fh)
     for d in dets:
         if face_box is not None:
-            if d.behaviour == "phone" and contains(d.box, centre):
+            if d.behaviour == "phone" and _inside_frac(face_box, d.box) >= 0.8 and _area(d.box) > 1.5 * _area(face_box):
                 continue
             cx, cy = (d.box[0] + d.box[2]) / 2, (d.box[1] + d.box[3]) / 2
             if not contains(roi, (cx, cy)):

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DMS Cloud</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">● Driver Monitoring <span class="muted">cloud</span></div>
+  <div id="who" class="muted"></div>
+  <button id="logout" class="btn hidden">Log out</button>
+</header>
+
+<main>
+  <!-- login / register -->
+  <section id="auth" class="card narrow">
+    <h2 id="auth-title">Log in</h2>
+    <form id="auth-form">
+      <label id="name-row" class="hidden">Name <input id="f-name" autocomplete="name" maxlength="120"></label>
+      <label>Email <input id="f-email" type="email" autocomplete="username" required maxlength="254"></label>
+      <label>Password <input id="f-pass" type="password" autocomplete="current-password" required maxlength="200"></label>
+      <button class="btn primary" type="submit" id="auth-submit">Log in</button>
+      <p class="err" id="auth-err"></p>
+    </form>
+    <p class="muted">No account? <a href="#" id="toggle-auth">Create one</a></p>
+  </section>
+
+  <section id="app" class="hidden">
+    <div class="grid">
+      <div class="card">
+        <h3>Overview</h3>
+        <div class="stats" id="stats"></div>
+      </div>
+      <div class="card">
+        <h3>Help improve the models</h3>
+        <label class="switch"><input type="checkbox" id="consent"> Share anonymised driving measurements</label>
+        <p class="muted small">Only numbers leave the car (eye openness, mouth, head angle, 30 s around an alert you rated). Never video, images or audio. Turning this off deletes everything you shared.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Devices <span class="muted small">dash cams and phones that upload to your account</span></h3>
+      <table id="devices"></table>
+      <form id="dev-form" class="row">
+        <input id="dev-name" placeholder="Device name, e.g. Swift dash cam" required maxlength="120">
+        <select id="dev-kind"><option value="dashcam">Dash cam</option><option value="phone">Phone</option><option value="web">Laptop / web</option></select>
+        <button class="btn primary">Add device</button>
+      </form>
+      <div id="new-key" class="key hidden"></div>
+    </div>
+
+    <div class="card">
+      <h3>Trips</h3>
+      <table id="trips"></table>
+    </div>
+
+    <div class="card hidden" id="trip-card">
+      <h3 id="trip-title">Trip</h3>
+      <div class="row">How sleepy did you feel on this trip?
+        <select id="kss"><option value="">–</option></select>
+        <span class="muted small">Karolinska scale: 1 very alert … 9 fighting sleep</span>
+      </div>
+      <table id="events"></table>
+    </div>
+
+    <div class="card hidden" id="admin-card">
+      <h3>Training data quality <span class="muted small">(admin)</span></h3>
+      <pre id="dataset"></pre>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

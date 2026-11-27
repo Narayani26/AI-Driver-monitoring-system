@@ -16,10 +16,11 @@ class FaceObservation:
     landmarks: np.ndarray  # (478, 3) pixel x/y, z scaled like x
     transform: np.ndarray | None  # 4x4 facial transformation matrix
     blendshapes: dict[str, float]
+    n_faces: int = 1  # faces in view; only the driver's is returned, passengers are ignored
 
 
 class FaceLandmarker:
-    def __init__(self, model_path: str | Path = DEFAULT_MODEL, video_mode: bool = True, min_conf: float = 0.5):
+    def __init__(self, model_path: str | Path = DEFAULT_MODEL, video_mode: bool = True, min_conf: float = 0.5, num_faces: int = 3):
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
@@ -31,7 +32,7 @@ class FaceLandmarker:
         opts = vision.FaceLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(model_path)),
             running_mode=vision.RunningMode.VIDEO if video_mode else vision.RunningMode.IMAGE,
-            num_faces=1,
+            num_faces=num_faces,  # several, so we can pick the driver and ignore passengers
             min_face_detection_confidence=min_conf,
             min_face_presence_confidence=min_conf,
             min_tracking_confidence=min_conf,
@@ -41,6 +42,7 @@ class FaceLandmarker:
         self._lm = vision.FaceLandmarker.create_from_options(opts)
         self._last_ms = -1
         self._closed = False
+        self._driver_c: tuple[float, float] | None = None  # last driver face centre (tracking)
 
     def detect(self, bgr: np.ndarray, t: float | None = None) -> FaceObservation | None:
         h, w = bgr.shape[:2]
@@ -54,15 +56,40 @@ class FaceLandmarker:
             res = self._lm.detect(img)
         if not res.face_landmarks:
             return None
-        lm = np.array([(p.x * w, p.y * h, p.z * w) for p in res.face_landmarks[0]], dtype=np.float32)
-        tf = np.array(res.facial_transformation_matrixes[0]) if res.facial_transformation_matrixes else None
-        bs = {c.category_name: float(c.score) for c in res.face_blendshapes[0]} if res.face_blendshapes else {}
-        return FaceObservation(lm, tf, bs)
+        faces = [np.array([(p.x * w, p.y * h, p.z * w) for p in f], dtype=np.float32) for f in res.face_landmarks]
+        i = select_driver(faces, self._driver_c, w)
+        lm = faces[i]
+        self._driver_c = (float(lm[:, 0].mean()), float(lm[:, 1].mean()))
+        tf = np.array(res.facial_transformation_matrixes[i]) if res.facial_transformation_matrixes else None
+        bs = {c.category_name: float(c.score) for c in res.face_blendshapes[i]} if res.face_blendshapes else {}
+        return FaceObservation(lm, tf, bs, n_faces=len(faces))
+
+    def reset_driver(self):
+        self._driver_c = None
 
     def close(self):
         if not self._closed:
             self._closed = True
             self._lm.close()
+
+
+def select_driver(faces: list[np.ndarray], prev_centre: tuple[float, float] | None, width: int) -> int:
+    """Index of the driver's face among all faces in view.
+
+    The driver sits closest to a dash/cabin camera, so their face is the largest. Once we
+    follow a driver we keep following the face near the same place, so a passenger leaning
+    in from the back seat (smaller, elsewhere) never takes over the alerts.
+    """
+    if len(faces) == 1:
+        return 0
+    areas = [float(np.ptp(f[:, 0]) * np.ptp(f[:, 1])) for f in faces]
+    biggest = int(np.argmax(areas))
+    if prev_centre is not None:
+        dists = [np.hypot(f[:, 0].mean() - prev_centre[0], f[:, 1].mean() - prev_centre[1]) for f in faces]
+        near = int(np.argmin(dists))
+        if dists[near] < 0.2 * width and areas[near] >= 0.5 * areas[biggest]:
+            return near
+    return biggest
 
 
 def bbox_from_points(pts: np.ndarray, shape, margin: float = 0.25, square: bool = True) -> tuple[int, int, int, int]:

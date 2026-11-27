@@ -140,6 +140,14 @@ class EyeClosureTracker:
         while self._blinks and t - self._blinks[0][0] > self.window_s:
             self._blinks.popleft()
 
+    def pause(self) -> None:
+        """Eye state can't be measured right now (head tilted or turned too far: from a low camera
+        open eyes then *look* closed). Stop any closed episode instead of counting it; the glance
+        tracker covers the head-away case."""
+        self._closed_since = None
+        self._in_microsleep = False
+        self.last_closed = False
+
     @property
     def closed_duration(self) -> float:
         if self._closed_since is None or not self._samples:
@@ -156,7 +164,7 @@ class EyeClosureTracker:
             return 0.0
         ts = np.array([s[0] for s in self._samples])
         cl = np.array([s[1] for s in self._samples], dtype=np.float64)
-        dt = np.diff(ts)
+        dt = np.minimum(np.diff(ts), 0.5)  # a gap (paused / no face) must not count as closed or open time
         total = max(dt.sum(), self.min_span_s)
         return float((cl[:-1] * dt).sum() / total)
 
@@ -189,6 +197,10 @@ class YawnTracker:
         self._open_since: float | None = None
         self._counted = False
         self._yawns: deque[float] = deque()
+
+    def pause(self) -> None:
+        """Head far from frontal: mouth shape is unreliable (tilting the head back opens the jaw)."""
+        self._open_since = None
 
     def update(self, t: float, mar: float, jaw_open: float) -> bool:
         if not np.isnan(jaw_open):

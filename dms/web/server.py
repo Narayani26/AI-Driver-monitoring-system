@@ -43,12 +43,14 @@ from ..features.geometry import LEFT_EYE, RIGHT_EYE
 from ..models.networks import EMOTION_CLASSES
 from ..pipeline import DriverMonitor, FrameResult, MonitorConfig
 from ..storage import EventStore, Syncer
+from ..cloud.quality import kss_to_label
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="Driver Monitoring System", docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 CFG: dict = {"token": None, "bind_host": "127.0.0.1", "allow_files": False, "origins": set(), "audio": False, "mishap": False}
+RATEABLE = {"drowsy", "microsleep", "yawning", "snoring"}  # alerts whose rating becomes a training label
 STATE: dict = {"store": None, "syncer": None, "started": time.time(), "sessions": 0}
 MOUTH = (61, 81, 13, 311, 291, 402, 14, 178)
 MAX_FRAME_BYTES = 4 * 1024 * 1024
@@ -79,6 +81,7 @@ def serialize(r: FrameResult, shape, proc_ms: float, timings: dict | None = None
         "eye_openness": _num(r.eye_openness, 3),
         "eye_cnn_closed": _num(r.eye_cnn_closed, 3),
         "eye_closed": r.eye_closed,
+        "eyes_measurable": r.eyes_measurable,
         "eye_closed_s": _num(r.eye_closed_duration, 2),
         "off_road": r.off_road,
         "off_road_s": _num(r.off_road_duration, 2),
@@ -184,6 +187,8 @@ class Session:
         self.session_id = EventStore.new_session()
         self.t_start = time.time()
         self._last_timing_log = 0.0
+        self.kss: int | None = None
+        self.snaps: dict[float, dict] = {}  # alert time -> measurement window (only with --share-training-data)
 
     async def send(self, obj):
         await self.ws.send_text(json.dumps(obj))
@@ -194,10 +199,20 @@ class Session:
         for a in r.alerts:
             self.store.add_event(self.session_id, a.kind, a.severity, t_session=a.t, detail=a.detail,
                                  risk=None if r.risk is None else round(r.risk.index, 1))
+            if CFG.get("share") and a.kind in RATEABLE:
+                # keep the 30 s of measurements behind this alert in case the driver rates it
+                snap = self.mon.window.snapshot(self.mon.profile)
+                if snap:
+                    self.snaps[round(a.t, 2)] = snap
+                    while len(self.snaps) > 10:
+                        self.snaps.pop(next(iter(self.snaps)))
 
     def save_trip(self):
         if self.store is not None and self.mon is not None and self.mon.recorder.frames:
-            self.store.save_trip(self.session_id, self.mon.recorder.summary(), self.t_start)
+            summary = self.mon.recorder.summary()
+            if self.kss is not None:
+                summary["kss"] = self.kss
+            self.store.save_trip(self.session_id, summary, self.t_start)
 
     async def process(self, frame: np.ndarray, t: float) -> dict:
         t0 = time.perf_counter()
@@ -265,7 +280,7 @@ class Session:
         elif kind == "recalibrate":
             self.save_trip()
             self.mon.reset(keep_profile=False)
-            self.session_id, self.t_start = EventStore.new_session(), time.time()
+            self.session_id, self.t_start, self.kss = EventStore.new_session(), time.time(), None
         elif kind == "config":
             if "objects" in msg:
                 self.mon._objects_enabled = bool(msg["objects"])
@@ -280,6 +295,25 @@ class Session:
             self.mon.acknowledge(float(msg.get("t", self.mon._last_t or 0.0)))
             if self.store:
                 self.store.add_event(self.session_id, "driver_ok", "info")
+        elif kind == "feedback":  # driver says an alert was right / wrong
+            verdict, at = msg.get("verdict"), msg.get("t")
+            if verdict not in ("correct", "false_alarm") or not isinstance(at, (int, float)):
+                return
+            if self.store:
+                self.store.add_event(self.session_id, "feedback", "info", t_session=float(at), alert=str(msg.get("kind", ""))[:32], verdict=verdict)
+                snap = self.snaps.pop(round(float(at), 2), None)
+                if snap and CFG.get("share"):
+                    self.store.add_sample(self.session_id, {**snap, "label": 0 if verdict == "false_alarm" else 2,
+                                                            "label_source": "false_alarm" if verdict == "false_alarm" else "confirmed"})
+        elif kind == "kss":  # driver's own sleepiness rating (Karolinska scale 1-9)
+            v = msg.get("value")
+            if not isinstance(v, int) or not 1 <= v <= 9 or self.store is None:
+                return
+            self.kss = v
+            self.save_trip()
+            snap = self.mon.window.snapshot(self.mon.profile) if CFG.get("share") else None
+            if snap:
+                self.store.add_sample(self.session_id, {**snap, "label": kss_to_label(v), "label_source": "kss", "kss": v})
         elif kind == "report":
             self.save_trip()
             await self.send({"type": "report", **self.mon.recorder.full()})
@@ -354,7 +388,8 @@ async def ws_endpoint(ws: WebSocket):
             s.mon.object_model = lambda frame: orig(frame) if s.mon._objects_enabled else []
             s.mon.object_model.name = orig.name
         await s.send({"type": "ready", "models": {**s.mon.models_info(), "objects": orig.name if orig else None},
-                      "features": {"audio": CFG["audio"], "mishap": CFG["mishap"], "sensitivity": CFG.get("sensitivity", "normal")}})
+                      "features": {"audio": CFG["audio"], "mishap": CFG["mishap"], "sensitivity": CFG.get("sensitivity", "normal"),
+                                   "rating": bool(STATE["store"])}})
         while True:
             m = await ws.receive()
             if m["type"] == "websocket.disconnect":
@@ -398,7 +433,10 @@ def main(argv=None):
     ap.add_argument("--allow-origin", action="append", default=[], help="extra allowed Origin/Host (e.g. a reverse proxy name)")
     ap.add_argument("--allow-files", action="store_true", help="let the stream box open local video files (off: only camera URLs)")
     ap.add_argument("--store", default=str(Path.home() / ".dms" / "events.db"), help="offline event store (SQLite); '' to disable")
-    ap.add_argument("--sync-url", help="HTTPS endpoint to upload events/trips when online (store-and-forward)")
+    ap.add_argument("--sync-url", help="HTTPS endpoint to upload events/trips when online (store-and-forward), e.g. https://<cloud>/api/ingest")
+    ap.add_argument("--sync-token", help="device key from the cloud dashboard (env DMS_SYNC_TOKEN also works and keeps it out of `ps`)")
+    ap.add_argument("--share-training-data", action="store_true",
+                    help="opt-in: when the driver rates an alert or their sleepiness, keep 30 s of numeric measurements (no images) for retraining")
     ap.add_argument("--allow-unverified-models", action="store_true", help="start even if model checksums don't match")
     ap.add_argument("--ssl-certfile"), ap.add_argument("--ssl-keyfile")
     a = ap.parse_args(argv)
@@ -412,11 +450,11 @@ def main(argv=None):
         print("  WARNING: serving on the network without HTTPS - camera frames travel unencrypted. Use --ssl-certfile/--ssl-keyfile.")
     CFG.update(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, drowsy_ckpt=a.drowsy_ckpt, yolo_weights=a.yolo, calib_seconds=a.calib_seconds,
                emotion_source=a.emotion, audio=a.audio, mishap=a.mishap, sensitivity=a.sensitivity, token=token, bind_host=a.host,
-               allow_files=a.allow_files, origins=set(a.allow_origin), weight_problems=problems)
+               allow_files=a.allow_files, origins=set(a.allow_origin), weight_problems=problems, share=a.share_training_data and bool(a.store))
     if a.store:
         STATE["store"] = EventStore(a.store)
         if a.sync_url:
-            STATE["syncer"] = Syncer(STATE["store"], a.sync_url, os.environ.get("DMS_SYNC_TOKEN"))
+            STATE["syncer"] = Syncer(STATE["store"], a.sync_url, a.sync_token or os.environ.get("DMS_SYNC_TOKEN"))
             STATE["syncer"].start()
     probe = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, drowsy_ckpt=a.drowsy_ckpt, yolo_weights=a.yolo,
                                         emotion_source=a.emotion, audio=a.audio, mishap=a.mishap))
@@ -429,7 +467,7 @@ def main(argv=None):
     if exposed:
         print("  (from another device use this computer's IP address instead of 0.0.0.0; keep the token secret)")
     print(f"  features: audio={'on' if a.audio else 'off'}  accident-detection={'on' if a.mishap else 'off'}  "
-          f"event store={a.store or 'off'}  sync={'on' if a.sync_url else 'off'}\n")
+          f"event store={a.store or 'off'}  sync={'on' if a.sync_url else 'off'}  training-data sharing={'on' if CFG['share'] else 'off'}\n")
     uvicorn.run(app, host=a.host, port=a.port, ssl_certfile=a.ssl_certfile, ssl_keyfile=a.ssl_keyfile, log_level="warning")
 
 

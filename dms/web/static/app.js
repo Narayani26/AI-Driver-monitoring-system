@@ -235,7 +235,10 @@ function updateStats(r) {
   }
   const f = r.features;
   if (!r.face) { setText("s-eyes", "no face", "v warn"); $("s-eyes-sub").textContent = ""; }
-  else if (r.eye_openness != null) {
+  else if (r.eyes_measurable === false) {
+    setText("s-eyes", "not judged", "v");
+    $("s-eyes-sub").textContent = "head tilted/turned: eye shape unreliable, attention tracking instead";
+  } else if (r.eye_openness != null) {
     const closed = !!r.eye_closed;
     setText("s-eyes", closed ? "CLOSED" : "open", closed ? "v bad" : "v good");
     $("s-eyes-sub").textContent = `openness ${(r.eye_openness * 100).toFixed(0)}% · EAR ${f.ear?.toFixed(3)}` +
@@ -270,12 +273,23 @@ function onAlert(a) {
   const li = document.createElement("li");
   li.className = a.severity;
   li.innerHTML = `<span class="t">${fmtTime(a.t)}</span><div class="m">${esc(a.message)}${a.detail ? ` <span class="muted">(${esc(a.detail)})</span>` : ""}</div><div class="g">💡 ${esc(a.suggestion)}</div>`;
+  if (S.features && S.features.rating && SEV[a.severity] >= 1) {
+    // driver feedback: counts false alarms, and (if sharing is on) labels training data
+    const fb = document.createElement("div");
+    fb.className = "fb";
+    fb.innerHTML = '<span class="muted small">Was this right?</span> <button class="btn tiny" data-v="correct">✓ yes</button> <button class="btn tiny" data-v="false_alarm">✗ no</button>';
+    fb.querySelectorAll("button").forEach((b) => (b.onclick = () => {
+      send({ type: "feedback", t: a.t, kind: a.kind, verdict: b.dataset.v });
+      fb.innerHTML = `<span class="muted small">${b.dataset.v === "correct" ? "Thanks: marked right" : "Thanks: marked as a false alarm"}</span>`;
+    }));
+    li.appendChild(fb);
+  }
   ul.prepend(li);
   while (ul.children.length > 50) ul.lastChild.remove();
   $("alert-count").textContent = `${S.alerts.length} total`;
   if (SEV[a.severity] >= 1) toast(a);
   if ($("opt-sound").checked) playSound(a.sound);
-  if ($("opt-voice").checked) speak(a);
+  if ($("opt-voice").checked && SEV[a.severity] >= 2) speak(a); // cautions and notices: tone + message only, no voice
 }
 let toastTimer = null;
 function toast(a) {
@@ -407,7 +421,12 @@ function showReport(m) {
       <div><h3>Alerts by type</h3><table>${kinds}</table></div>
       <div><h3>Emotions</h3><p>${emos}</p><h3>Unsafe behaviour</h3><p>${Object.entries(s.behaviour_time_s).map(([k, v]) => `${k}: ${v}s`).join(" · ") || "none detected"}</p></div>
     </div>
+    ${S.features && S.features.rating ? `<div class="kss-row">How sleepy did you feel? <select id="kss-select"><option value="">choose</option>
+      ${["1 extremely alert", "2", "3 alert", "4", "5 neither", "6", "7 sleepy, no effort to stay awake", "8", "9 fighting sleep"]
+        .map((x, i) => `<option value="${i + 1}">${x}</option>`).join("")}</select> <span class="muted small" id="kss-done"></span></div>` : ""}
     <h3>Risk over the whole session</h3>`;
+  const kss = $("kss-select");
+  if (kss) kss.onchange = () => { if (kss.value) { send({ type: "kss", value: Number(kss.value) }); $("kss-done").textContent = "saved, thank you"; } };
   $("report").classList.remove("hidden");
   const hist = m.timeline.map((p) => ({ t: p.t, risk: p.risk, d: p.drowsiness * 100, x: p.distraction * 100, a: p.affect * 100 }));
   requestAnimationFrame(() => drawChart($("report-chart"), hist, 0));

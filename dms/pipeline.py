@@ -62,9 +62,11 @@ class MonitorConfig:
     emotion_source: str = "pretrained"  # "pretrained" (HSEmotion/AffectNet) or "trained" (emotion head of face_ckpt)
     eye_cnn: bool = True  # use the eye head of face_ckpt together with EAR
     eye_hz: float = 8.0
+    eye_max_pitch: float = 15.0  # degrees from the calibrated pose beyond which eye/mouth shape is not trusted
+    eye_max_yaw: float = 25.0
     objects: bool = True  # YOLO phone / drink / smoking detection
     yolo_weights: str | None = None
-    object_hz: float = 4.0
+    object_hz: float = 8.0  # phone use should be caught within about a second
     face_hz: float = 5.0
     cabin_hz: float = 3.0
     temporal_hz: float = 1.0
@@ -96,6 +98,7 @@ class FrameResult:
     eye_openness: float | None = None
     eye_cnn_closed: float | None = None  # eye-state CNN probability (if a face checkpoint is loaded)
     eye_closed: bool = False  # fused decision used by the trackers
+    eyes_measurable: bool = True  # False while the head is tilted/turned too far to judge the eyes
     cabin: str | None = None
     cabin_conf: float = 0.0
     alertness: str | None = None
@@ -143,6 +146,45 @@ class _Throttle:
             self.next = t + self.period
             return True
         return False
+
+
+class TrainingWindow:
+    """The last `seconds` of raw face measurements at `rate_hz`, kept so a window around an
+    alert the driver rated can become a training sample (UTA-RLDD feature format).
+    Also records what the quality gate needs: face visibility, frontal pose, faces in view and
+    whether the tracked face jumped (another person taking the driver's place)."""
+
+    def __init__(self, seconds: float = 30.0, rate_hz: float = 10.0):
+        from collections import deque
+
+        self.rate_hz, self.period = rate_hz, 1.0 / rate_hz
+        self.buf = deque(maxlen=int(seconds * rate_hz))
+        self._next_t: float | None = None
+        self._last_c: tuple[float, float] | None = None
+
+    def update(self, t: float, feats: FrameFeatures, frontal: bool, obs, width: int):
+        switched = False
+        if obs is not None:
+            c = (float(obs.landmarks[:, 0].mean()), float(obs.landmarks[:, 1].mean()))
+            if self._last_c is not None and np.hypot(c[0] - self._last_c[0], c[1] - self._last_c[1]) > 0.2 * width:
+                switched = True
+            self._last_c = c
+        if self._next_t is None or t - self._next_t > 2.0:
+            self._next_t = t
+        while t >= self._next_t:
+            self.buf.append((feats.vector(), bool(feats.face), bool(frontal), 0 if obs is None else obs.n_faces, switched))
+            switched = False
+            self._next_t += self.period
+
+    def snapshot(self, profile: DriverProfile | None) -> dict | None:
+        if not self.buf or profile is None:
+            return None
+        rows = list(self.buf)
+        raw = [[None if np.isnan(v) else round(float(v), 5) for v in r[0]] for r in rows]
+        return {"raw": raw, "present": [r[1] for r in rows], "fps": self.rate_hz,
+                "profile": [profile.ear_open, profile.mar_rest, profile.yaw0, profile.pitch0, profile.n_samples],
+                "meta": {"frontal_frac": round(float(np.mean([r[2] for r in rows])), 3), "max_faces": int(max(r[3] for r in rows)),
+                         "driver_switches": int(sum(r[4] for r in rows))}}
 
 
 class _ModelWorker:
@@ -223,6 +265,7 @@ class DriverMonitor:
             self.calibrator.profile = DriverProfile.load(cfg.profile)
         self._build_trackers()
         self.seq = FeatureSequence(cfg.seq_len, cfg.seq_rate_hz)
+        self.window = TrainingWindow(cfg.seq_len / cfg.seq_rate_hz, cfg.seq_rate_hz)
         self.fusion = RiskFusion()
         self.recorder = SessionRecorder()
         self._thr_face, self._thr_cabin, self._thr_temp = _Throttle(cfg.face_hz), _Throttle(cfg.cabin_hz), _Throttle(cfg.temporal_hz)
@@ -303,6 +346,7 @@ class DriverMonitor:
         self.calibrator.profile = prof
         self._build_trackers()
         self.seq = FeatureSequence(self.cfg.seq_len, self.cfg.seq_rate_hz)
+        self.window = TrainingWindow(self.cfg.seq_len / self.cfg.seq_rate_hz, self.cfg.seq_rate_hz)
         self.fusion = RiskFusion()
         self.recorder.reset()
         self._emotion_p = self._cabin_p = self._alert_p = None
@@ -317,6 +361,7 @@ class DriverMonitor:
             self.mishap = MishapDetector()
         # MediaPipe VIDEO mode needs increasing timestamps; keep its clock offset.
         self._t_offset = self.landmarker._last_ms / 1000.0 + 1.0
+        self.landmarker.reset_driver()
 
     @staticmethod
     def _load(path):
@@ -329,6 +374,12 @@ class DriverMonitor:
     @property
     def profile(self) -> DriverProfile | None:
         return self.calibrator.profile
+
+    def _frontal(self, f: FrameFeatures, prof: DriverProfile) -> bool:
+        """Is the face close enough to the calibrated pose for eye/mouth shape to be trusted?"""
+        if np.isnan(f.pitch) or np.isnan(f.yaw):
+            return True
+        return abs(f.pitch - prof.pitch0) <= self.cfg.eye_max_pitch and abs(f.yaw - prof.yaw0) <= self.cfg.eye_max_yaw
 
     def _timed(self, name: str, fn):
         t0 = time.perf_counter()
@@ -432,10 +483,16 @@ class DriverMonitor:
         prof = self.profile
 
         # --- temporal indicators ----------------------------------------------
-        if feats.face:
+        frontal = feats.face and self._frontal(feats, prof)
+        if frontal:
             self.eyes.update(t, feats.ear, prof, self._eye_p)
             self.yawn.update(t, feats.mar, feats.jaw_open_bs)
+        else:
+            self.eyes.pause()
+            self.yawn.pause()
+        if feats.face:
             self.seq.update(t, feats.vector(), prof)
+        self.window.update(t, feats, frontal, obs, frame.shape[1])
         g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=feats.face)
 
         if self._alert_p is not None:
@@ -465,14 +522,15 @@ class DriverMonitor:
             ),
         )
         res.off_road, res.off_road_duration = g.off_road, g.off_road_duration
-        res.eye_cnn_closed, res.eye_closed = self._eye_p, bool(feats.face and self.eyes.last_closed)
+        res.eye_cnn_closed, res.eye_closed = self._eye_p, bool(frontal and self.eyes.last_closed)
+        res.eyes_measurable = bool(frontal)
         res.eye_closed_duration = self.eyes.closed_duration
         if feats.face and not np.isnan(feats.ear):
             res.eye_openness = self.eyes.openness(feats.ear, prof)
         mishap_events = []
         if self.mishap is not None:
             res.mishap = self.mishap.update(t, jolt=jolt, audio_groups=audio_groups, face=feats.face,
-                                           eyes_closed=bool(feats.face and self.eyes.last_closed))
+                                           eyes_closed=bool(frontal and self.eyes.last_closed))
             mishap_events = self.mishap.pop_events()
         res.alerts = self.alerter.update(
             t, risk=res.risk, microsleep=self.eyes.in_microsleep, closed_duration=self.eyes.closed_duration,

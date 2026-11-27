@@ -19,5 +19,7 @@ six
 # Web demo
 fastapi>=0.110
 uvicorn[standard]>=0.29
+# Cloud backend (dms.cloud): SQLite by default; add psycopg[binary] for PostgreSQL
+sqlalchemy>=2.0
 # Dev
 pytest>=8

@@ -8,7 +8,9 @@ survives power loss (relevant for a device powered from a car).
 
 Privacy by design: only event metadata is stored (time, type, severity, short
 reason, numeric scores). No images, video, audio or face data ever enter the
-store, so a stolen phone or SD card does not leak footage.
+store, so a stolen phone or SD card does not leak footage. Training samples
+(30 s of numeric eye/mouth/head measurements around an alert the driver rated)
+are only recorded when the driver opted in to sharing them.
 """
 from __future__ import annotations
 
@@ -29,6 +31,9 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_unsynced ON events(synced, t_wall);
 CREATE TABLE IF NOT EXISTS trips (
     session TEXT PRIMARY KEY, t_start REAL, t_end REAL, summary TEXT, synced INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS samples (
+    id TEXT PRIMARY KEY, session TEXT NOT NULL, t_wall REAL NOT NULL, body TEXT NOT NULL, synced INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -64,6 +69,26 @@ class EventStore:
             self._db.execute("INSERT OR REPLACE INTO trips(session, t_start, t_end, summary, synced) VALUES (?,?,?,?,0)",
                              (session, t_start, time.time(), json.dumps(summary, default=str)))
 
+    def add_sample(self, session: str, body: dict) -> str:
+        sid = uuid.uuid4().hex
+        with self._lock:
+            self._db.execute("INSERT INTO samples(id, session, t_wall, body) VALUES (?,?,?,?)",
+                             (sid, session, time.time(), json.dumps({**body, "id": sid, "session": session})))
+        return sid
+
+    def set_trip_kss(self, session: str, kss: int):
+        with self._lock:
+            self._db.execute("UPDATE trips SET summary=json_set(summary, '$.kss', ?), synced=0 WHERE session=?", (kss, session))
+
+    def unsynced_samples(self, limit: int = 20) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT body FROM samples WHERE synced=0 ORDER BY t_wall LIMIT ?", (limit,)).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def mark_samples_synced(self, ids: list[str]):
+        with self._lock:
+            self._db.executemany("UPDATE samples SET synced=1 WHERE id=?", [(i,) for i in ids])
+
     def unsynced(self, limit: int = 200) -> tuple[list[dict], list[dict]]:
         with self._lock:
             ev = self._db.execute("SELECT id, session, t_wall, t_session, kind, severity, payload FROM events WHERE synced=0 ORDER BY t_wall LIMIT ?", (limit,)).fetchall()
@@ -83,6 +108,7 @@ class EventStore:
         with self._lock:
             self._db.execute("DELETE FROM events WHERE synced=1 AND t_wall < ?", (cutoff,))
             self._db.execute("DELETE FROM trips WHERE synced=1 AND t_end < ?", (cutoff,))
+            self._db.execute("DELETE FROM samples WHERE synced=1 OR t_wall < ?", (cutoff,))
 
     def counts(self) -> dict:
         with self._lock:
@@ -114,9 +140,13 @@ class Syncer(threading.Thread):
 
     def sync_once(self) -> int:
         events, trips = self.store.unsynced()
-        if not events and not trips:
+        samples = self.store.unsynced_samples()
+        if not events and not trips and not samples:
             return 0
-        body = json.dumps({"events": events, "trips": trips}).encode()
+        for tr in trips:  # the driver's own sleepiness rating travels as a trip field
+            if "kss" in tr["summary"]:
+                tr["kss"] = tr["summary"]["kss"]
+        body = json.dumps({"events": events, "trips": trips, "samples": samples}).encode()
         req = urllib.request.Request(self.url, data=body, method="POST", headers={"Content-Type": "application/json"})
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
@@ -124,7 +154,8 @@ class Syncer(threading.Thread):
             if resp.status >= 300:
                 raise urllib.error.HTTPError(self.url, resp.status, "upload rejected", resp.headers, None)
         self.store.mark_synced([e["id"] for e in events], [t["session"] for t in trips])
-        return len(events) + len(trips)
+        self.store.mark_samples_synced([x["id"] for x in samples])
+        return len(events) + len(trips) + len(samples)
 
     def run(self):
         backoff = self.interval_s

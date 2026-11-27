@@ -27,7 +27,7 @@ MESSAGES = {
     # audio (opt-in)
     "snoring": ("critical", "alarm", "Wake up! Snoring detected.", "You may be falling asleep. Pull over safely now."),
     "shouting": ("caution", "soft", "Raised voices detected.", "Stay calm and keep your focus on the road. The conversation can wait."),
-    "siren": ("info", "chime", "Emergency vehicle nearby.", "Slow down, check your mirrors and be ready to give way."),
+    "siren": ("warning", "chime", "Emergency vehicle nearby.", "Slow down, check your mirrors and be ready to give way."),
     "phone_ring": ("info", "soft", "Your phone is ringing.", "Let it go to voicemail, or answer hands-free."),
     "baby": ("info", "soft", "A child is crying.", "Stop somewhere safe before attending to passengers."),
     # possible accident (opt-in; needs audio and/or jolt evidence)
@@ -36,7 +36,7 @@ MESSAGES = {
     "possible_accident": ("critical", "alarm", "Possible accident. Please respond.", "Tap I'm OK to cancel. Otherwise your emergency contact will be alerted."),
     "sos": ("critical", "alarm", "Emergency SOS raised.", "SOS logged. In the vehicle app this notifies your emergency contact with your location."),
 }
-COOLDOWN_S = {"critical": 6.0, "warning": 15.0, "caution": 45.0, "info": 120.0}
+COOLDOWN_S = {"critical": 8.0, "warning": 30.0, "caution": 90.0, "info": 180.0}  # repeating the same alert sooner nags
 
 
 @dataclass
@@ -109,7 +109,7 @@ class AlertManager:
         # alertness (temporal model) is already inside risk.drowsiness as supporting evidence;
         # it no longer triggers the alert on its own
         drowsy = risk is not None and risk.drowsiness >= self.drowsy_threshold
-        if self._sustained("drowsy", drowsy and not microsleep, t, 2.0):
+        if self._sustained("drowsy", drowsy and not microsleep, t, 4.0):
             add(self._fire("drowsy", t, f"drowsiness {risk.drowsiness:.0%}"))
         if yawns_5min >= 3:
             add(self._fire("yawning", t, f"{yawns_5min} yawns in 5 min"))
@@ -118,7 +118,7 @@ class AlertManager:
         elif vats:
             add(self._fire("glances", t))
         for b in ("phone", "smoking", "drinking", "no_seatbelt"):
-            if self._sustained(b, behaviours.get(b, 0.0) >= 0.5, t, 1.0):
+            if self._sustained(b, behaviours.get(b, 0.0) >= (0.4 if b == "phone" else 0.5), t, 0.7 if b == "phone" else 1.0):
                 add(self._fire(b, t, f"{behaviours[b]:.0%}"))
         if self._sustained("stress", emotion_probs_affect >= 0.6, t, 5.0):
             add(self._fire("stress", t))
