@@ -166,6 +166,8 @@ def main(argv=None):
     ap.add_argument("--fit-all", action="store_true", help="after CV, retrain on all data and save as deploy.pt")
     a = ap.parse_args(argv)
     torch.manual_seed(a.seed)
+    import os
+    torch.set_num_threads(max(1, (os.cpu_count() or 2) - 1))  # use the CPU cores (default often uses only a few)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"

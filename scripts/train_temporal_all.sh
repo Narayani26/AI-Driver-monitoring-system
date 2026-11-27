@@ -3,7 +3,8 @@
 # Runs on a laptop CPU (no GPU needed) because the slow video -> feature step is already done on Kaggle.
 #
 #   bash scripts/train_temporal_all.sh                 # features in features/rldd (from dms_temporal.zip)
-#   EPOCHS=20 bash scripts/train_temporal_all.sh       # quicker
+#   EPOCHS=20 bash scripts/train_temporal_all.sh       # quicker (~1 h on a laptop)
+#   Re-running resumes: experiments with a metrics.json are skipped.
 #
 # Results: runs_temporal2/<experiment>/metrics.json + a summary table at the end.
 set -euo pipefail
@@ -14,7 +15,13 @@ EPOCHS=${EPOCHS:-40}
 [ -n "$(ls "$FEAT"/*.npz 2>/dev/null)" ] || { echo "no features in $FEAT - unzip dms_temporal.zip into the project first"; exit 1; }
 export PYTHONUNBUFFERED=1  # show progress live (otherwise output appears only when each model finishes)
 COMMON="--folds 5 --epochs $EPOCHS --steps-per-epoch 100 --drop 0.3"
-run() { echo; echo "=== $1"; shift; python -m dms.training.train_temporal "$FEAT" "$@" 2>&1 | grep --line-buffered -E "fold [0-9]|window macroF1|epoch [0-9]+0/" || true; }
+run() {  # run "<title>" <args...>; skipped if that experiment already finished (re-running the script resumes)
+  local title="$1"; shift
+  local out; out=$(printf '%s\n' "$@" | grep -A1 -- '--out' | tail -1)
+  if [ -f "$out/metrics.json" ]; then echo; echo "=== $title: already done ($out), skipped"; return; fi
+  echo; echo "=== $title"
+  python -m dms.training.train_temporal "$FEAT" "$@" 2>&1 | grep --line-buffered -E "fold [0-9]|window macroF1|epoch [0-9]+0/" || true
+}
 
 # 3 classes: alert / low-vigilant / drowsy
 run "RF (3-class)"                         --model rf --folds 5 --out $OUT/rf
