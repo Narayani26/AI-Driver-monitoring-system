@@ -12,8 +12,9 @@ FEAT=${FEAT:-features/rldd}
 OUT=${OUT:-runs_temporal2}
 EPOCHS=${EPOCHS:-40}
 [ -n "$(ls "$FEAT"/*.npz 2>/dev/null)" ] || { echo "no features in $FEAT - unzip dms_temporal.zip into the project first"; exit 1; }
+export PYTHONUNBUFFERED=1  # show progress live (otherwise output appears only when each model finishes)
 COMMON="--folds 5 --epochs $EPOCHS --steps-per-epoch 100 --drop 0.3"
-run() { echo; echo "=== $1"; shift; python -m dms.training.train_temporal "$FEAT" "$@" 2>&1 | grep -E "fold [0-9]|window macroF1" || true; }
+run() { echo; echo "=== $1"; shift; python -m dms.training.train_temporal "$FEAT" "$@" 2>&1 | grep --line-buffered -E "fold [0-9]|window macroF1|epoch [0-9]+0/" || true; }
 
 # 3 classes: alert / low-vigilant / drowsy
 run "RF (3-class)"                         --model rf --folds 5 --out $OUT/rf
