@@ -11,10 +11,12 @@ gaze), from which a face cannot be reconstructed.
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from pathlib import Path
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -139,7 +141,15 @@ def make_engine(url: str | None = None):
             cur.close()
     else:
         eng = create_engine(url, pool_pre_ping=True)
-    Base.metadata.create_all(eng)
+    try:
+        Base.metadata.create_all(eng)
+    except OperationalError as e:
+        masked = re.sub(r"(://[^:/@]+:)[^@]*@", r"\1****@", url)
+        msg = str(getattr(e, "orig", e)).splitlines()[0]
+        hint = ("the password in DMS_DATABASE_URL is not the database password (Supabase: Project Settings > Database > "
+                "Reset database password; letters and digits only; no [ ] brackets)") if "password authentication" in msg else \
+               "check the host, port and that the database is running / not paused"
+        raise SystemExit(f"cannot connect to the database {masked}\n  {msg}\n  -> {hint}") from None
     return eng
 
 
