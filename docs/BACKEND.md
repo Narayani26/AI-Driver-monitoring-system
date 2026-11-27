@@ -72,15 +72,31 @@ docker compose up -d
 ```
 The dashboard is at http://localhost:9000. The database is only reachable by the backend container: no port is opened to the outside. Its data lives in the `pgdata` volume and survives restarts.
 
-### Option B: Supabase (hosted PostgreSQL, free tier)
-1. Create a project at supabase.com. In the project's **Connect** dialog (or Project Settings → Database), copy the **connection string (URI)**. Use the *session* pooler or the direct connection.
-2. In that string, change the start `postgresql://` to `postgresql+psycopg://` (this tells SQLAlchemy which driver to use). If the string has no `?sslmode=require`, add it at the end.
-3. Run the backend with that string:
-   ```bash
-   DMS_DATABASE_URL="postgresql+psycopg://postgres.<project>:<password>@<host>:5432/postgres?sslmode=require" DMS_CLOUD_SECRET=<random> python -m dms.cloud.app
-   ```
+### Option B: Supabase (set up: project "ai-driver-monitoring", Mumbai)
+The tables, indexes and security rules are already in the project (migration `db/migrations/0001_init.sql`). All 6 tables have Row Level Security with no public policies, so Supabase's public API can read nothing; only our backend reads and writes.
 
-The tables appear in Supabase's Table Editor (`users`, `devices`, `trips`, `events`, `samples`). This uses Supabase only as a PostgreSQL database: logins stay in our own backend, so nothing depends on Supabase-specific features. Turn on Row Level Security for the tables in Supabase anyway, so that its public REST API exposes nothing; our backend connects as the database owner and is not affected.
+1. In Supabase, open the project **ai-driver-monitoring**. Go to **Project Settings → Database → Reset database password**, set a new password with letters and digits only (symbols break the connection string), and save it somewhere safe.
+2. Click **Connect** at the top, choose **Session pooler**, and copy the URI:
+   `postgresql://postgres.<project-ref>:[YOUR-PASSWORD]@aws-…pooler.supabase.com:5432/postgres`
+3. In the project folder, create `.env` (it is git-ignored). Use the copied URI, but start it with `postgresql+psycopg://`, put your password in, and add `?sslmode=require` at the end:
+   ```bash
+   cat > .env <<'EOF'
+   DMS_DATABASE_URL=postgresql+psycopg://postgres.<project-ref>:YOURPASSWORD@aws-…pooler.supabase.com:5432/postgres?sslmode=require
+   EOF
+   ```
+   Then add a random signing secret:
+   ```bash
+   echo "DMS_CLOUD_SECRET=$(openssl rand -hex 32)" >> .env
+   ```
+4. Start the backend:
+   ```bash
+   set -a; source .env; set +a; python -m dms.cloud.app
+   ```
+   Open http://localhost:9000 and create your account. Then, in a second terminal, make yourself admin (use your own email):
+   ```bash
+   set -a; source .env; set +a; python -m dms.cloud.app --make-admin you@example.com
+   ```
+5. In Supabase's **Table Editor** your account now appears in `users`, and trips, alerts and ratings appear as you drive.
 
 ### What is stored
 
@@ -99,6 +115,21 @@ There is **no column for images, video or audio** anywhere: footage never leaves
 - **In the cloud**, PostgreSQL holds every user's data. The car's Syncer sends its local rows there when online, then marks them as sent.
 
 ## The retraining loop (how the models get better from real drives)
+
+It runs automatically once a week (`deploy/dms-retrain.timer`), or by hand:
+```bash
+python -m dms.cloud.retrain --base features/rldd
+```
+Each run either:
+- **skips**, because there isn't enough real data yet, or
+- **registers a new model version** as *approved* or *rejected*, with its test numbers. You see these in the dashboard's Admin → Model registry.
+
+Devices then update themselves; replace `<device key>` with the key from the dashboard:
+```bash
+DMS_SYNC_TOKEN=<device key> python -m dms.cloud.fetch_model --url https://<backend> --out weights/fleet
+```
+That downloads the approved model and verifies its SHA-256 before use.
+
 
 1. **Labels come from the driver**, never from the model itself:
    - **✗ no** on a drowsiness alert → that window is labelled *alert*: a real false alarm, the most valuable data.
