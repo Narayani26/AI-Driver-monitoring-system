@@ -70,7 +70,7 @@ class Event(Base):
     __tablename__ = "events"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # generated in the car: uploads are idempotent
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     trip_id: Mapped[str] = mapped_column(String(64), index=True)
     t_wall: Mapped[float] = mapped_column(Float, index=True)
     t_session: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -85,7 +85,7 @@ class Sample(Base):
     __tablename__ = "samples"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
     trip_id: Mapped[str] = mapped_column(String(64), index=True)
     created_at: Mapped[float] = mapped_column(Float, default=time.time)
     label: Mapped[int] = mapped_column(Integer)  # 0 alert, 1 low vigilant, 2 drowsy (UTA-RLDD scale)
