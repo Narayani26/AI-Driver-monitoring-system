@@ -21,15 +21,35 @@ Emotion improved from 69.2% (FER2013 only, run 3) to 73.8% by adding RAF-DB. Tem
 
 **Reproducibility check (run 5):** the whole Kaggle notebook was run again from a clean clone with the same seeds, now with State Farm and AffectNet+ attached. Every number above came out identical to the 4th decimal place (eye 0.9804, yawn 0.9909, emotion 0.7380, NTHU 0.6064), as did behaviour (92.1% unseen drivers / 99.6% random split), so the results are deterministic and reproducible.
 
+### Run 6 (Kaggle T4, "best" preset): EfficientNet-B2 for every model, 15 epochs, test-time augmentation
+
+| Task | Test data | Fast (run 4/5) | **Best (run 6)** | Change |
+|---|---|---|---|---|
+| Eye open/closed | MRL Eye, unseen people (12,576) | 98.0% | 97.95% | ≈ same (already saturated) |
+| Yawn | Yawn-Eye test (219) | 99.1% | 100% | +0.9 (small test set) |
+| Emotion, 7 classes | FER2013 + RAF-DB test (10,246) | 73.8% | **75.4%** (F1 0.714) | +1.6 |
+| Emotion, other dataset | AffectNet+ (3,500, never trained on) | 46.9% | **48.4%** (F1 0.460) | +1.5 |
+| Driver behaviour, 10 classes | State Farm, **unseen drivers** (3,440) | **92.1%** | 88.95% | **−3.1** |
+| same, random split | same drivers as training (3,345) | 99.6% | 99.7% | ≈ same |
+| Frame drowsiness | NTHU-DDD, **unseen person** (5,953) | 60.6% | **66.7%** (F1 0.624) | +6.1 |
+| same, random split | same people (2,701) | 94.2% | 96.9% | +2.7 |
+| Speed per image (ONNX, CPU, 2 threads) | face / cabin network | 4.4 / 9.3 ms | 15.0 / 14.8 ms | 1.6–3.4× slower |
+
+Findings:
+* **A bigger model helps where training and test look alike, and can hurt on new people.** On State Farm the larger B2 network fits the 26 training drivers better (99.7% random split) but generalises worse to unseen drivers (92.1% → 89.0%): more capacity memorises more of *who* is in the picture. This strengthens the leakage finding: the gap between random split and unseen drivers grows from 17× to **41× more errors**.
+* Emotion and frame drowsiness gain a little (+1.5 to +6 points). The NTHU unseen test is one person, so +6 points is indicative only.
+* **Deployed choice (best model per task, not per run):** face network from run 6 (emotion +1.6, eye equal), cabin network from the fast run (better on new drivers and faster), frame-drowsiness network from run 6.
+
 ### Emotion on a dataset never trained on: AffectNet+ (3,500 human-labelled validation images, 7 classes)
 
 | Model | Trained on | Accuracy | Macro-F1 |
 |---|---|---|---|
 | Our multi-task network, run 3 | FER2013 | 34.4% | – |
 | Our multi-task network, run 4/5 | FER2013 + RAF-DB | 46.9% | 0.443 |
+| Our multi-task network, run 6 (EfficientNet-B2) | FER2013 + RAF-DB | 48.4% | 0.460 |
 | Pretrained HSEmotion EfficientNet-B0 | AffectNet (same source as the test) | **63.1%** | – |
 
-Adding RAF-DB raised cross-dataset emotion accuracy by 12.5 points. Our model still trails a model trained on AffectNet itself, because the test images come from that dataset's distribution (an in-domain advantage). Emotion recognition from a single photo also does not transfer well between datasets, so the live demo uses HSEmotion for emotion (`--emotion pretrained`, the default), and emotion only modifies risk; it never triggers an alert by itself. Our 73.8% figure is on FER2013/RAF-DB test sets, 46.9% on a different dataset: both are reported.
+Adding RAF-DB raised cross-dataset emotion accuracy by 12.5 points; a larger network added another 1.5. Our model still trails a model trained on AffectNet itself, because the test images come from that dataset's distribution (an in-domain advantage). Emotion recognition from a single photo also does not transfer well between datasets, so the live demo uses HSEmotion for emotion (`--emotion pretrained`, the default), and emotion only modifies risk; it never triggers an alert by itself. Our 73.8% figure is on FER2013/RAF-DB test sets, 46.9% on a different dataset: both are reported.
 
 ### Run 3 (fast preset, State Farm included)
 
@@ -44,8 +64,8 @@ Adding RAF-DB raised cross-dataset emotion accuracy by 12.5 points. Our model st
 
 | Dataset | Random split (people shared) | Unseen people | Error rate × |
 |---|---|---|---|
-| State Farm (behaviour) | 99.6% | 92.1% | **17×** more errors |
-| NTHU-DDD (frame drowsiness) | 94.2% | 60.6% | **7×** more errors |
+| State Farm (behaviour) | 99.6% | 92.1% | **17×** more errors (41× with the larger B2 model, run 6) |
+| NTHU-DDD (frame drowsiness) | 94.2% | 60.6% | **7×** more errors (11× in run 6: 96.9% vs 66.7%) |
 
 Reporting random-split accuracy, as many papers do, overstates how a model works on a new driver. The effect is largest for drowsiness, where a frame classifier mostly learns *who* is in the image rather than *how sleepy* they are.
 
@@ -108,6 +128,5 @@ Chance level: 33% for 3 classes, 50% for 2 classes.
 | Camera jolt + driver unresponsive | possible accident → SOS | 3 s + 15 s countdown |
 
 ## 4. Next results (pending)
-* "Better"/"best" image presets (EfficientNet-B0/B2, 12–15 epochs, test-time augmentation): the 5th Kaggle run used the fast preset again.
 * NTHU-DDD/DMD cross-dataset test of the temporal model.
 * False alarms per hour on real drives (`dms.tools.evaluate_alerts`).
