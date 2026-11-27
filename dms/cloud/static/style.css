@@ -36,7 +36,7 @@ tr.click:hover { background: var(--bg); }
 .hidden { display: none !important; }
 .stats { display: flex; gap: 24px; flex-wrap: wrap; }
 .stats div b { display: block; font-size: 24px; }
-.key { background: var(--bg); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; word-break: break-all; font-family: ui-monospace, monospace; font-size: 13px; }
+.key { white-space: pre-wrap; background: var(--bg); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; word-break: break-all; font-family: ui-monospace, monospace; font-size: 13px; }
 .sev-critical { color: var(--bad); font-weight: 600; }
 .sev-warning { color: var(--warn); font-weight: 600; }
 pre { white-space: pre-wrap; font-size: 13px; margin: 0; }

@@ -159,7 +159,9 @@ $("dev-form").onsubmit = async (e) => {
   $("dev-name").value = "";
   const box = $("new-key");
   box.classList.remove("hidden");
-  box.textContent = `Device key for "${r.name}" (shown only once, copy it now):\n${r.device_key}\n\nStart the car app with:  --sync-url ${location.origin}/api/ingest --sync-token ${r.device_key}`;
+  box.textContent = `Device key for "${r.name}" (shown only once, copy it now):\n${r.device_key}\n\n` +
+    `Command to start the car app (copy the whole next line into a terminal in the project folder):\n` +
+    `DMS_SYNC_TOKEN=${r.device_key} python -m dms.web.server --audio --mishap --sync-url ${location.origin}/api/ingest --share-training-data`;
   loadDevices();
 };
 
