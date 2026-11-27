@@ -82,6 +82,8 @@ class RiskFusion:
         self._ema_phone = _EMA(tau * 0.7)
         self._last_microsleep: float | None = None
         self.post_microsleep_floor, self.post_microsleep_tau = 0.65, 45.0
+        self.learned_cap = 0.45  # max drowsiness from learned models without measured signs
+        self.cabin_cap = 0.5  # max distraction from the State Farm behaviour CNN without a detected object
         self.level_idx = 0
 
     # ----------------------------------------------------------------- parts
@@ -98,17 +100,29 @@ class RiskFusion:
         if r.audio_groups and r.audio_groups.get("snoring", 0.0) >= 0.5:
             s = max(s, 0.9)
             reasons.append("snoring sound")
-        if r.frame_drowsy is not None:  # supporting evidence only: it can raise, never dominate
+        # Learned drowsiness models (frame CNN, temporal model) are *supporting* evidence.
+        # Alone they can raise at most a caution (they are trained on other people and cameras,
+        # and a single model's false positive must not alarm an alert driver); together with
+        # measured evidence (PERCLOS, long blinks, yawns) they can push the score higher.
+        learned = []
+        if r.frame_drowsy is not None:
+            learned.append((r.frame_drowsy, 0.4))
             if r.frame_drowsy > 0.7:
                 reasons.append(f"drowsy appearance ({r.frame_drowsy:.0%})")
-            s = 0.75 * s + 0.25 * r.frame_drowsy
         if r.alertness_probs is not None:
             p = r.alertness_probs
             names = ALERTNESS_CLASSES if len(p) == 3 else ("alert", "drowsy")
             model = float(p[1] * 0.5 + p[2]) if len(p) == 3 else float(p[1])
+            learned.append((model, 0.6))
             if model > 0.6:
                 reasons.append(f"temporal model: {names[int(np.argmax(p))]} ({p.max():.0%})")
-            s = 0.5 * s + 0.5 * model
+        self._measured_drowsy = s >= 0.25
+        if learned:
+            m = sum(v * w for v, w in learned) / sum(w for _, w in learned)
+            measured = s
+            s = max(measured, self.learned_cap * m)  # alone: at most a caution
+            if measured >= 0.25:  # measured signs present: the models may confirm and strengthen them
+                s = max(s, 0.6 * measured + 0.4 * m)
         return s
 
     def _distraction(self, t: float, r: RiskInputs, reasons: list[str]) -> float:
@@ -117,17 +131,21 @@ class RiskFusion:
             s = 1.0
         elif r.vats_distraction:
             s = max(s, 0.8)
+        self._measured_distract = s >= 0.25  # head pose / gaze (before the learned behaviour CNN)
         if r.cabin_probs is not None:
             p = r.cabin_probs
             unsafe = self._ema_cabin(t, 1.0 - float(p[CABIN_CLASSES.index("safe_driving")]))
             if unsafe > 0.5:
                 k = int(np.argmax(p[1:])) + 1
                 reasons.append(f"behaviour: {CABIN_CLASSES[k].replace('_', ' ')}")
-            # phone use / texting are the high-risk behaviours
-            s = max(s, unsafe * (1.0 if np.argmax(p) in (1, 2, 3, 4) else 0.7))
+            # Supporting evidence: the CNN was trained on side-mounted cameras (State Farm), so alone
+            # it can raise at most a caution; a phone confirmed by the object detector goes higher.
+            s = max(s, min(unsafe * (1.0 if np.argmax(p) in (1, 2, 3, 4) else 0.7), self.cabin_cap))
         if r.behaviours:
             b = r.behaviours
             phone = self._ema_phone(t, b.get("phone", 0.0))
+            if max(phone, b.get("smoking", 0.0), b.get("drinking", 0.0)) >= 0.5:
+                self._measured_distract = True
             if phone > 0.5:
                 reasons.append(f"phone in use ({phone:.0%})")
             s = max(s, phone, 0.6 * b.get("smoking", 0.0), 0.4 * b.get("drinking", 0.0))
@@ -164,6 +182,12 @@ class RiskFusion:
         # Probabilistic OR of the two primary hazards, scaled by affect.
         base = 1.0 - (1.0 - self.w_drowsy * d) * (1.0 - self.w_distract * x)
         index = 100.0 * float(np.clip(base * (1.0 + self.affect_gain * a), 0.0, 1.0))
+        snoring = bool(r.audio_groups and r.audio_groups.get("snoring", 0.0) >= 0.5)
+        if not (self._measured_drowsy or self._measured_distract or snoring or r.microsleep
+                or self._last_microsleep is not None and t - self._last_microsleep < 60):
+            # only learned models (trained on other people / cameras) are worried: show a caution,
+            # never a warning, until something measurable confirms it
+            index = min(index, ENTER[2] - 1.0)
         if a > 0.6:
             reasons.append("sustained negative high-arousal affect")
             index = max(index, ENTER[1])

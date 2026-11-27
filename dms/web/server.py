@@ -63,7 +63,7 @@ def _num(x, nd=4):
     return None if math.isnan(x) or math.isinf(x) else round(x, nd)
 
 
-def serialize(r: FrameResult, shape, proc_ms: float) -> dict:
+def serialize(r: FrameResult, shape, proc_ms: float, timings: dict | None = None) -> dict:
     f, rk = r.features, r.risk
     out = {
         "type": "result",
@@ -95,6 +95,7 @@ def serialize(r: FrameResult, shape, proc_ms: float) -> dict:
         "mishap": None if r.mishap is None else {"phase": r.mishap.phase, "countdown": round(r.mishap.countdown, 1), "evidence": r.mishap.evidence},
         "risk": None if rk is None else {"index": round(rk.index, 1), "level": rk.level, "drowsiness": round(rk.drowsiness, 3), "distraction": round(rk.distraction, 3), "affect": round(rk.affect, 3), "reasons": rk.reasons},
         "alerts": [a.as_dict() for a in r.alerts],
+        "timings": {k: round(v, 1) for k, v in (timings or {}).items()},
     }
     if r.obs is not None:
         lm = r.obs.landmarks
@@ -182,6 +183,7 @@ class Session:
         self.store: EventStore | None = STATE["store"]
         self.session_id = EventStore.new_session()
         self.t_start = time.time()
+        self._last_timing_log = 0.0
 
     async def send(self, obj):
         await self.ws.send_text(json.dumps(obj))
@@ -201,7 +203,14 @@ class Session:
         t0 = time.perf_counter()
         r = await run_in_threadpool(self.mon.process, frame, t)
         self._log_alerts(r)
-        return serialize(r, frame.shape, (time.perf_counter() - t0) * 1000)
+        ms = (time.perf_counter() - t0) * 1000
+        now = time.monotonic()
+        if now - self._last_timing_log > 10:  # where the time goes, so slowness can be diagnosed
+            self._last_timing_log = now
+            parts = " · ".join(f"{k} {v:.0f}" for k, v in self.mon.timings.items())
+            err = f"  MODEL ERROR: {self.mon._worker.error}" if self.mon._worker and self.mon._worker.error else ""
+            print(f"  [speed] {ms:.0f} ms/frame, {r.fps:.0f} FPS | model ms: {parts}{err}", flush=True)
+        return serialize(r, frame.shape, ms, self.mon.timings)
 
     async def run_stream(self, url: str):
         src = int(url) if url.isdigit() else url
@@ -337,7 +346,7 @@ async def ws_endpoint(ws: WebSocket):
         keys = ("face_ckpt", "cabin_ckpt", "temporal_ckpt", "drowsy_ckpt", "yolo_weights")
         cfg = MonitorConfig(**{k: CFG.get(k) for k in keys if CFG.get(k)}, calib_seconds=CFG.get("calib_seconds", 5.0),
                             emotion_source=CFG.get("emotion_source", "pretrained"), audio=CFG["audio"], mishap=CFG["mishap"],
-                            sensitivity=CFG.get("sensitivity", "normal"))
+                            sensitivity=CFG.get("sensitivity", "normal"), async_models=True)
         s.mon = await run_in_threadpool(DriverMonitor, cfg)
         s.mon._objects_enabled = True
         orig = s.mon.object_model

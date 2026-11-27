@@ -31,8 +31,9 @@ MESSAGES = {
     "phone_ring": ("info", "soft", "Your phone is ringing.", "Let it go to voicemail, or answer hands-free."),
     "baby": ("info", "soft", "A child is crying.", "Stop somewhere safe before attending to passengers."),
     # possible accident (opt-in; needs audio and/or jolt evidence)
-    "impact": ("warning", "alarm", "Sudden impact detected. Are you OK?", "If you or the car are hurt, stop safely, switch on the hazard lights and call for help."),
-    "possible_accident": ("critical", "alarm", "Possible accident! Are you OK?", "Press I'm OK to cancel. Otherwise your emergency contact will be alerted."),
+    "crash_sound": ("caution", "soft", "Loud crash sound nearby.", "Slow down and check your mirrors. If your car was hit, stop safely and switch on the hazard lights."),
+    "impact": ("warning", "chime", "Sudden jolt detected.", "If your car was hit, stop safely and switch on the hazard lights. Tap I'm OK if you are fine."),
+    "possible_accident": ("critical", "alarm", "Possible accident. Please respond.", "Tap I'm OK to cancel. Otherwise your emergency contact will be alerted."),
     "sos": ("critical", "alarm", "Emergency SOS raised.", "SOS logged. In the vehicle app this notifies your emergency contact with your location."),
 }
 COOLDOWN_S = {"critical": 6.0, "warning": 15.0, "caution": 45.0, "info": 120.0}
@@ -105,7 +106,9 @@ class AlertManager:
 
         if microsleep:
             add(self._fire("microsleep", t, f"eyes closed {closed_duration:.1f}s"))
-        drowsy = risk is not None and (risk.drowsiness >= self.drowsy_threshold or alertness == "drowsy")
+        # alertness (temporal model) is already inside risk.drowsiness as supporting evidence;
+        # it no longer triggers the alert on its own
+        drowsy = risk is not None and risk.drowsiness >= self.drowsy_threshold
         if self._sustained("drowsy", drowsy and not microsleep, t, 2.0):
             add(self._fire("drowsy", t, f"drowsiness {risk.drowsiness:.0%}"))
         if yawns_5min >= 3:

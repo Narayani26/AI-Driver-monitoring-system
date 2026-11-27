@@ -48,10 +48,12 @@ Quicker run: `EPOCHS=20 bash scripts/train_temporal_all.sh`. Keep the Mac plugge
 
 ## 6. When everything is done
 * Paste to Claude: the table from step 5, the last cell's output of step 4 (lines starting with `runs_better/...`), and the two lines from step 3. `docs/RESULTS.md` gets updated from them.
-* Demo with the best model for each task (runs 4–6 and round 5):
+* Live demo (front webcam):
   ```bash
-  python -m dms.web.server --face-ckpt runs_best/face/best.pt --cabin-ckpt runs/cabin/best.pt \
-      --drowsy-ckpt runs_best/drowsy/best.pt \
-      --temporal-ckpt runs_temporal2/hybrid_binary/deploy.pt --sensitivity low
+  python -m dms.web.server --face-ckpt runs/face/best.pt --temporal-ckpt runs_temporal2/hybrid_binary/deploy.pt --audio --mishap
   ```
-  The cabin model comes from the fast run on purpose: it is better on drivers it has never seen (92.1% vs 89.0%).
+  * The fast face network is used live on purpose: its eye accuracy equals the large one (98.0% vs 97.95%), live emotion comes from HSEmotion anyway, and it is 3x lighter, so the models update more often.
+  * `--cabin-ckpt` (State Farm) only for **side-view** videos like State Farm's; on a front webcam it guesses ("talking to passenger").
+  * `--drowsy-ckpt` (NTHU) is optional: 66.7% on an unseen person, so it is supporting evidence only.
+  * Learned models never alarm on their own: alone they can raise at most a CAUTION; a WARNING needs measured evidence (eye closure/PERCLOS, yawns, gaze, a detected phone).
+  * The terminal prints a `[speed]` line every 10 s with the time per model.

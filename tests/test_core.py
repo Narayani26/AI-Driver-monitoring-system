@@ -606,3 +606,48 @@ def test_hybrid_temporal_model_and_binary(tmp_path):
 def test_risk_accepts_binary_temporal_model():
     out = RiskFusion().update(0.0, RiskInputs(alertness_probs=np.array([0.1, 0.9])))
     assert out.drowsiness > 0.4 and any("drowsy" in r for r in out.reasons)
+
+
+def test_learned_drowsiness_alone_is_only_a_caution():
+    """A temporal/frame model saying 'drowsy' with no measured signs must not alarm an alert driver."""
+    from dms.fusion.alerts import AlertManager
+    from dms.fusion.risk import RiskFusion, RiskInputs
+
+    fu, al = RiskFusion(), AlertManager()
+    kinds = []
+    for i in range(300):
+        t = i / 10
+        r = fu.update(t, RiskInputs(alertness_probs=np.array([0.04, 0.96]), frame_drowsy=0.9))
+        kinds += [a.kind for a in al.update(t, risk=r, microsleep=False, closed_duration=0, long_distraction=False, vats=False,
+                                             off_road_duration=0, yawns_5min=0, face=True, alertness="drowsy",
+                                             emotion_probs_affect=0, behaviours={})]
+    assert r.index < 55 and "drowsy" not in kinds
+    # with measured evidence (high PERCLOS) the same models strengthen the score
+    for i in range(300, 600):
+        r = fu.update(i / 10, RiskInputs(perclos=0.25, alertness_probs=np.array([0.04, 0.96]), frame_drowsy=0.9))
+    assert r.drowsiness > 0.7
+
+
+def test_crash_sound_alone_is_a_calm_notice():
+    from dms.fusion.mishap import MishapDetector
+
+    md, kinds = MishapDetector(), []
+    for i in range(50):
+        md.update(i / 10, jolt=False, audio_groups={"impact": 0.9} if i == 5 else {}, face=True, eyes_closed=False)
+        kinds += [k for _, k, _ in md.pop_events()]
+    assert kinds == ["crash_sound"]
+
+
+def test_async_models_keep_frames_fast():
+    """The live app runs learned models in the background: process() must not wait for them."""
+    import time as _t
+
+    from dms.pipeline import _ModelWorker
+
+    w = _ModelWorker()
+    assert w.submit(lambda: _t.sleep(0.3))
+    t0 = _t.perf_counter()
+    assert not w.submit(lambda: None)  # busy: returns at once instead of queueing
+    assert _t.perf_counter() - t0 < 0.05
+    w.wait()
+    assert not w.busy

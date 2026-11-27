@@ -105,7 +105,7 @@ def main(argv=None):
 
     mon = DriverMonitor(MonitorConfig(face_ckpt=a.face_ckpt, cabin_ckpt=a.cabin_ckpt, temporal_ckpt=a.temporal_ckpt, drowsy_ckpt=a.drowsy_ckpt, profile=a.profile,
                                       calib_seconds=a.calib_seconds, objects=not a.no_objects, yolo_weights=a.yolo,
-                                      emotion_source=a.emotion, mishap=a.mishap, sensitivity=a.sensitivity))
+                                      emotion_source=a.emotion, mishap=a.mishap, sensitivity=a.sensitivity, async_models=live))
     store = session = None
     if a.store:
         from ..storage import EventStore

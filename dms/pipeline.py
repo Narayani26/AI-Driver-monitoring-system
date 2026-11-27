@@ -7,10 +7,16 @@ face crop ─► FaceStateNet (emotion)  ─────────────
 full frame ─► CabinNet (phone, drinking, ...) ─────────────────────────────────────┘
 
 Learned models are optional; heavy ones are throttled to a fixed rate so the
-loop stays real-time on a CPU.
+loop stays real-time on a CPU. With `async_models=True` (the live app) they run
+in a background thread: every frame is answered immediately from the face
+landmarks, and the learned models update their latest output as fast as the
+machine allows. A slow or large model then lowers how often *it* updates,
+never the video frame rate.
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,7 +61,7 @@ class MonitorConfig:
     emotion: bool = True
     emotion_source: str = "pretrained"  # "pretrained" (HSEmotion/AffectNet) or "trained" (emotion head of face_ckpt)
     eye_cnn: bool = True  # use the eye head of face_ckpt together with EAR
-    eye_hz: float = 15.0
+    eye_hz: float = 8.0
     objects: bool = True  # YOLO phone / drink / smoking detection
     yolo_weights: str | None = None
     object_hz: float = 4.0
@@ -64,7 +70,8 @@ class MonitorConfig:
     temporal_hz: float = 1.0
     seq_len: int = 300  # 30 s at 10 Hz
     seq_rate_hz: float = 10.0
-    threads: int = 2
+    threads: int = max(2, min(4, (os.cpu_count() or 2) // 2))
+    async_models: bool = False  # True for live use (see module docstring); False = deterministic, for offline evaluation
     sensitivity: str = "normal"  # low | normal | high (see SENSITIVITY)
     audio: bool = False  # YAMNet cabin-audio events (needs audio pushed via push_audio)
     mishap: bool = False  # possible-accident detection (camera jolt and/or crash sounds)
@@ -138,10 +145,55 @@ class _Throttle:
         return False
 
 
+class _ModelWorker:
+    """One background thread that runs the learned models on the newest frame.
+    submit() never blocks: if the worker is still busy the frame is simply not
+    used for the learned models (the frame itself is still processed)."""
+
+    def __init__(self):
+        self._job = None
+        self._wake = threading.Event()
+        self._idle = threading.Event()
+        self._idle.set()
+        self.error: str | None = None
+        threading.Thread(target=self._loop, daemon=True, name="dms-models").start()
+
+    @property
+    def busy(self) -> bool:
+        return not self._idle.is_set()
+
+    def submit(self, fn) -> bool:
+        if self.busy:
+            return False
+        self._idle.clear()
+        self._job = fn
+        self._wake.set()
+        return True
+
+    def wait(self, timeout: float = 5.0):
+        self._idle.wait(timeout)
+
+    def _loop(self):
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            fn, self._job = self._job, None
+            try:
+                if fn is not None:
+                    with torch.inference_mode():
+                        fn()
+            except Exception as e:  # noqa: BLE001 - a model error must not kill the monitor
+                self.error = f"{type(e).__name__}: {e}"
+            finally:
+                self._idle.set()
+
+
 class DriverMonitor:
     def __init__(self, cfg: MonitorConfig | None = None):
         self.cfg = cfg = cfg or MonitorConfig()
         torch.set_num_threads(cfg.threads)
+        # Trained weights can produce denormal floats, which make CPU convolutions 10-100x slower.
+        torch.set_flush_denormal(True)
         self.landmarker = FaceLandmarker(cfg.landmarker) if cfg.landmarker else FaceLandmarker()
         self.face_net, face_ck = checkpoint.load(cfg.face_ckpt) if cfg.face_ckpt else (None, None)
         if self.face_net is not None:
@@ -174,7 +226,7 @@ class DriverMonitor:
         self.fusion = RiskFusion()
         self.recorder = SessionRecorder()
         self._thr_face, self._thr_cabin, self._thr_temp = _Throttle(cfg.face_hz), _Throttle(cfg.cabin_hz), _Throttle(cfg.temporal_hz)
-        self._thr_obj, self._thr_eye = _Throttle(cfg.object_hz), _Throttle(cfg.eye_hz)
+        self._thr_obj, self._thr_eye, self._thr_drowsy = _Throttle(cfg.object_hz), _Throttle(cfg.eye_hz), _Throttle(cfg.cabin_hz)
         self._eye_p: float | None = None
         self._emotion_p = self._cabin_p = self._alert_p = None
         self._dets: list[Detection] = []
@@ -183,6 +235,9 @@ class DriverMonitor:
         self._audio = None
         self.jolt = JoltDetector()
         self.mishap = MishapDetector() if cfg.mishap else None
+        self.timings: dict[str, float] = {}  # moving average of milliseconds per model call
+        self._worker = _ModelWorker() if cfg.async_models else None
+        self._gen = 0  # bumped by reset(): results of jobs started before a reset are dropped
 
     def _build_trackers(self):
         p = SENSITIVITY.get(self.cfg.sensitivity, SENSITIVITY["normal"])
@@ -256,6 +311,7 @@ class DriverMonitor:
         self._dets = []
         self._last_t = None
         self._audio = None
+        self._gen += 1
         self.jolt.reset()
         if self.mishap is not None:
             self.mishap = MishapDetector()
@@ -274,6 +330,70 @@ class DriverMonitor:
     def profile(self) -> DriverProfile | None:
         return self.calibrator.profile
 
+    def _timed(self, name: str, fn):
+        t0 = time.perf_counter()
+        out = fn()
+        ms = (time.perf_counter() - t0) * 1000
+        self.timings[name] = ms if name not in self.timings else 0.8 * self.timings[name] + 0.2 * ms
+        return out
+
+    def _schedule_models(self, frame: np.ndarray, obs, t: float):
+        """Decide which learned models are due and run them (now, or in the background)."""
+        if self._worker is not None and self._worker.busy:
+            return  # still working on an earlier frame: use its latest outputs
+        due = []
+        if obs is not None and self.eye_model is not None and self._thr_eye.ready(t):
+            due.append("eye")
+        if obs is not None and self.emotion_model is not None and self._thr_face.ready(t):
+            due.append("emotion")
+        if obs is not None and self.drowsy_model is not None and self._thr_drowsy.ready(t):
+            due.append("drowsy")
+        if self.cabin_model is not None and self._thr_cabin.ready(t):
+            due.append("cabin")
+        if self.object_model is not None and self._thr_obj.ready(t):
+            due.append("objects")
+        seq = None
+        if self.temporal_model is not None and self.calibrator.done and self.seq.full and self._thr_temp.ready(t):
+            due.append("temporal")
+            seq = self.seq.array().copy()
+        if not due:
+            return
+        lm = None if obs is None else obs.landmarks
+        gen = self._gen
+
+        def job():
+            out = self._run_models(due, frame, lm, seq)
+            if gen == self._gen:  # not reset meanwhile
+                for k, v in out.items():
+                    setattr(self, k, v)
+
+        if self._worker is None:
+            job()
+        else:
+            self._worker.submit(job)
+
+    def _run_models(self, due, frame, lm, seq) -> dict:
+        out = {}
+        if "eye" in due:
+            out["_eye_p"] = self._timed("eye CNN", lambda: self.eye_model(frame, lm))
+        if "emotion" in due:
+            face = crop(frame, bbox_from_points(lm, frame.shape, 0.15))
+            if face is not None:
+                p = self._timed("emotion", lambda: self.emotion_model(face))
+                # light temporal smoothing: single-frame FER is noisy
+                out["_emotion_p"] = p if self._emotion_p is None else 0.6 * self._emotion_p + 0.4 * p
+        if "drowsy" in due:
+            p = self._timed("drowsy CNN", lambda: float(torch.softmax(self.drowsy_model(to_batch([frame], self._drowsy_size)) / self._drowsy_T, -1)[0, 1]))
+            out["_drowsy_p"] = p if self._drowsy_p is None else 0.85 * self._drowsy_p + 0.15 * p  # ~2 s smoothing at 3 Hz
+        if "cabin" in due:
+            out["_cabin_p"] = self._timed("cabin CNN", lambda: torch.softmax(self.cabin_model(to_batch([frame])), -1)[0].numpy())
+        if "objects" in due:
+            out["_dets"] = self._timed("objects (YOLO)", lambda: self.object_model(frame))
+        if "temporal" in due:
+            x = torch.from_numpy(seq).unsqueeze(0)
+            out["_alert_p"] = self._timed("temporal model", lambda: torch.softmax(self.temporal_model(x), -1)[0].numpy())
+        return out
+
     @torch.inference_mode()
     def process(self, frame: np.ndarray, t: float | None = None) -> FrameResult:
         t = time.monotonic() if t is None else t
@@ -281,32 +401,16 @@ class DriverMonitor:
             self._fps = 0.9 * self._fps + 0.1 / (t - self._last_t)
         self._last_t = t
 
-        obs = self.landmarker.detect(frame, t + getattr(self, "_t_offset", 0.0))
+        obs = self._timed("face landmarks", lambda: self.landmarker.detect(frame, t + getattr(self, "_t_offset", 0.0)))
         feats = compute_features(obs.landmarks, obs.transform, obs.blendshapes) if obs else FrameFeatures(face=False)
         face_box = bbox_from_points(obs.landmarks, frame.shape, 0.1) if obs else None
         jolt = self.jolt.update(t, frame) if self.mishap is not None else False
         audio_groups = self._audio.groups if (self._audio is not None and t - self._audio.t < 2.0) else None
 
-        # --- learned per-frame models (throttled) -----------------------------
+        # --- learned per-frame models (throttled; in the background when async) --
         if obs is None:
-            self._eye_p = None
-        elif self.eye_model is not None and self._thr_eye.ready(t):
-            self._eye_p = self.eye_model(frame, obs.landmarks)
-        if obs is None:
-            self._emotion_p = None
-        elif self.emotion_model is not None and self._thr_face.ready(t):
-            face = crop(frame, bbox_from_points(obs.landmarks, frame.shape, 0.15))
-            if face is not None:
-                p = self.emotion_model(face)
-                # light temporal smoothing: single-frame FER is noisy
-                self._emotion_p = p if self._emotion_p is None else 0.6 * self._emotion_p + 0.4 * p
-        if self.drowsy_model is not None and obs is not None and self._thr_cabin.ready(t):
-            p = float(torch.softmax(self.drowsy_model(to_batch([frame], self._drowsy_size)) / self._drowsy_T, -1)[0, 1])
-            self._drowsy_p = p if self._drowsy_p is None else 0.85 * self._drowsy_p + 0.15 * p  # ~2 s smoothing at 3 Hz
-        if self.cabin_model is not None and self._thr_cabin.ready(t):
-            self._cabin_p = torch.softmax(self.cabin_model(to_batch([frame])), -1)[0].numpy()
-        if self.object_model is not None and self._thr_obj.ready(t):
-            self._dets = self.object_model(frame)
+            self._eye_p = self._emotion_p = None
+        self._schedule_models(frame, obs, t)
         behaviours = behaviour_scores(self._dets, face_box, frame.shape)
 
         res = FrameResult(t=t, calibrating=None, features=feats, risk=None, obs=obs, fps=self._fps,
@@ -334,9 +438,6 @@ class DriverMonitor:
             self.seq.update(t, feats.vector(), prof)
         g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=feats.face)
 
-        if self.temporal_model is not None and self.seq.full and self._thr_temp.ready(t):
-            x = torch.from_numpy(self.seq.array()).unsqueeze(0)
-            self._alert_p = torch.softmax(self.temporal_model(x), -1)[0].numpy()
         if self._alert_p is not None:
             names = ALERTNESS_CLASSES if len(self._alert_p) == 3 else ("alert", "drowsy")
             res.alertness = names[int(np.argmax(self._alert_p))]

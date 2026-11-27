@@ -110,7 +110,7 @@ class MishapDetector:
         The spoken "impact - are you OK?" warning needs strong evidence (a jolt or sound >= strong_audio);
         weak evidence only matters if the driver then becomes unresponsive."""
         self.audio_thresh, self.strong_audio, self.check_s, self.unresponsive_s, self.sos_countdown_s = audio_thresh, strong_audio, check_s, unresponsive_s, sos_countdown_s
-        self._strong = False
+        self._strong = self._jolt = False
         self.state = MishapState()
         self._unresp_since: float | None = None
         self.events: list[tuple[float, str, str]] = []  # (t, kind, evidence) newly raised since last read
@@ -136,6 +136,7 @@ class MishapDetector:
             self.state = st = MishapState(phase="checking", since=t, evidence=", ".join(evidence))
             self._unresp_since = None
             self._strong = jolt or max(a.get("impact", 0.0), a.get("skid", 0.0)) >= self.strong_audio
+            self._jolt = jolt
         unresponsive_now = (not face) or eyes_closed
         if st.phase in ("checking", "impact"):
             if unresponsive_now:
@@ -147,7 +148,9 @@ class MishapDetector:
                 self._unresp_since = None
                 if st.phase == "checking" and self._strong:
                     st.phase = "impact"
-                    self.events.append((t, "impact", st.evidence))
+                    # a camera jolt means the car itself moved: ask the driver; a sound alone may
+                    # come from another car or the radio, so it only gets a calm notice
+                    self.events.append((t, "impact" if self._jolt else "crash_sound", st.evidence))
             if st.phase in ("checking", "impact") and t - st.since > self.check_s:
                 self.state = st = MishapState(phase="idle", since=t)
         elif st.phase == "possible_accident":
