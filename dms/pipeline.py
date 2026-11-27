@@ -37,7 +37,7 @@ from .models import checkpoint
 from .models.networks import ALERTNESS_CLASSES, CABIN_CLASSES, EMOTION_CLASSES
 from .perception.emotion import HSE_PATH, HSEmotionONNX, TorchEmotion
 from .perception.eyes import EyeStateCNN
-from .perception.face import FaceLandmarker, FaceObservation, bbox_from_points, crop
+from .perception.face import FaceLandmarker, FaceObservation, bbox_from_points, crop, detect_zoomed
 from .perception.objects import WEIGHTS as YOLO_WEIGHTS, Detection, behaviour_scores
 from .perception.pose import WEIGHTS as POSE_WEIGHTS, HeadObservation
 from .report import SessionRecorder
@@ -394,7 +394,7 @@ class DriverMonitor:
         if self.head_model is not None:
             self.head_model.reset()
         self.cam.reset()
-        self._primary = None
+        self._primary, self._last_face = None, None
         self.jolt.reset()
         if self.mishap is not None:
             self.mishap = MishapDetector()
@@ -414,6 +414,24 @@ class DriverMonitor:
     def profile(self) -> DriverProfile | None:
         return self.calibrator.profile
 
+    def _zoom_search(self, frame: np.ndarray, t: float):
+        """Face too small or dark for the full frame: look again in an enlarged crop around the
+        driver's head (last known face box, else the head found by the pose model)."""
+        box = None
+        lf = getattr(self, "_last_face", None)
+        if lf is not None and t - lf[0] < 1.0:
+            box = lf[1]
+        elif self._head is not None and t - self._head_t < 1.0:
+            box = self._head.face_box(frame.shape)
+        if box is None:
+            return None
+        if getattr(self, "_zoom_lm", None) is None:
+            self._zoom_lm = FaceLandmarker(video_mode=False, min_conf=0.3)
+        obs = self._timed("face landmarks (zoomed)", lambda: detect_zoomed(self._zoom_lm, frame, box))
+        if obs is not None:
+            self._last_face = (t, bbox_from_points(obs.landmarks, frame.shape, 0.1))
+        return obs
+
     def _recalibrate_position(self):
         """Camera moved: forget the driver's position (and open-eye shape, which depends on the
         viewing angle) but keep the trip, its report and the risk history."""
@@ -422,7 +440,7 @@ class DriverMonitor:
         self._build_trackers()
         self.seq = FeatureSequence(self.cfg.seq_len, self.cfg.seq_rate_hz)
         self.window = TrainingWindow(self.cfg.seq_len / self.cfg.seq_rate_hz, self.cfg.seq_rate_hz)
-        self._primary, self._alert_p = None, None
+        self._primary, self._alert_p, self._last_face = None, None, None
         self.landmarker.reset_driver()
         if self.head_model is not None:
             self.head_model.reset()
@@ -513,6 +531,10 @@ class DriverMonitor:
         self._last_t = t
 
         obs = self._timed("face landmarks", lambda: self.landmarker.detect(frame, t + getattr(self, "_t_offset", 0.0)))
+        if obs is None:
+            obs = self._zoom_search(frame, t)
+        else:
+            self._last_face = (t, bbox_from_points(obs.landmarks, frame.shape, 0.1))
         feats = compute_features(obs.landmarks, obs.transform, obs.blendshapes) if obs else FrameFeatures(face=False)
         face_box = bbox_from_points(obs.landmarks, frame.shape, 0.1) if obs else None
         jolt = self.jolt.update(t, frame) if self.mishap is not None else False
@@ -564,14 +586,18 @@ class DriverMonitor:
                 self.calibrator.update(t, feats)
             if head is not None:
                 self.head_cal.update(t, head.droop)
-            if self.calibrator.done or self.head_cal.done:
+            # side view wins only if no face has been seen for a whole calibration period
+            side_ready = self.head_cal.done and t - self._face_seen_t > self.cfg.calib_seconds
+            if self.calibrator.done or side_ready:
                 self._primary = "face" if self.calibrator.done else "side"
                 if self._primary == "face":
                     self.head_cal = HeadCalibrator(self.cfg.calib_seconds)
                 else:
                     self.calibrator = Calibrator(self.cfg.calib_seconds)
             else:
-                res.calibrating = (self.calibrator.progress(t) if mode == "face" else self.head_cal.progress(t) if mode == "side" else 0.0)
+                # progress of whichever view is being learned (a few missed frames don't reset the bar)
+                res.calibrating = max(self.calibrator.progress(t), self.head_cal.progress(t)) if t - self._face_seen_t < 2.0 or mode != "none" else 0.0
+                self._hold_mode(res, t)
                 return res  # still learning (or still looking for the driver): no risk shown, nothing is "safe" yet
         primary = self._primary
         res.primary = primary
@@ -655,10 +681,21 @@ class DriverMonitor:
             behaviours=behaviours, audio_groups=audio_groups, mishap_events=mishap_events, head_nod=res.nodding,
         )
         self.recorder.update(res, res.alerts, behaviours, g.off_road_duration, self.eyes.closed_duration)
+        self._hold_mode(res, t)
         return res
+
+    def _hold_mode(self, res: FrameResult, t: float):
+        """Display only: a face missed for a few frames (dark, small, motion blur) should not make the
+        status flicker to 'looking for the driver'; the shown view is held for 1 s."""
+        if res.mode != "none":
+            self._shown_mode = (t, res.mode)
+        elif getattr(self, "_shown_mode", None) and t - self._shown_mode[0] < 1.0:
+            res.mode = self._shown_mode[1]
 
     def close(self):
         self.landmarker.close()
+        if getattr(self, "_zoom_lm", None) is not None:
+            self._zoom_lm.close()
         if self.audio_monitor is not None:
             self.audio_monitor.close()
 

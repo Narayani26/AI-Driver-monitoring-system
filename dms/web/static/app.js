@@ -242,7 +242,11 @@ function updateStats(r) {
     }
     $("reasons").innerHTML = rk.reasons.map((x) => `<li>${esc(x)}</li>`).join("");
   } else if (r.calibrating != null) {
-    $("risk-num").textContent = "…"; $("risk-level").textContent = "CALIBRATING";
+    // nothing is known yet: clear the previous session's numbers instead of showing them
+    $("risk-num").textContent = "…"; $("risk-level").textContent = "CALIBRATING"; $("risk-level").style.color = "";
+    $("gauge").style.background = "conic-gradient(var(--panel2) 0deg, var(--panel2) 0deg)";
+    for (const k of ["drowsy", "distract", "affect"]) { $("b-" + k).style.width = "0%"; $("v-" + k).textContent = "–"; }
+    $("reasons").innerHTML = "";
   }
   const f = r.features;
   if (r.mode === "side") {

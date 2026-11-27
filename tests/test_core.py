@@ -737,3 +737,22 @@ def test_camera_move_vs_driver_turning():
     d = CameraMoveDetector()
     d.set_reference(_scene(1), "face", face)
     assert not any(d.update(i / 10, _scene(3), "face", face) for i in range(100))
+
+
+def test_zoomed_face_maps_back_to_the_frame():
+    """Small/dark face: found in an enlarged crop, its landmarks must land on the right spot of the full frame."""
+    from dms.perception.face import FaceObservation, detect_zoomed
+
+    frame = np.zeros((360, 640, 3), np.uint8)
+    head = (40, 150, 100, 210)  # a 60 px head near the left edge (wide-angle dash cam)
+
+    class FakeLandmarker:
+        def detect(self, img):
+            h, w = img.shape[:2]  # pretend the face sits in the centre of whatever crop we get
+            return FaceObservation(np.array([[w / 2, h / 2, 0.0]], np.float32), None, {})
+
+    obs = detect_zoomed(FakeLandmarker(), frame, head)
+    assert obs is not None and obs.zoomed
+    x, y = obs.landmarks[0, :2]
+    # centre of the crop (head box widened by 40%, clipped at the image edge) in frame coordinates
+    assert 40 <= x <= 100 and 150 <= y <= 210
