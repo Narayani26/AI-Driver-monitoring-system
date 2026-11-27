@@ -1,4 +1,5 @@
 import json
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
@@ -710,3 +711,29 @@ def test_head_from_side_view_keypoints_and_nod():
     for i in range(20):  # head held down 2 s: a nod
         nod.update(2 + i / 10, 0.35)
     assert nod.nodding and nod.count() == 1
+
+
+def _scene(seed, shift=0):
+    rng = np.random.default_rng(seed)
+    img = (rng.random((36, 64)) * 255).astype(np.uint8)
+    img = cv2.resize(img, (640, 360), interpolation=cv2.INTER_CUBIC)
+    return np.roll(np.dstack([img] * 3), shift, axis=1)
+
+
+def test_camera_move_vs_driver_turning():
+    from dms.features.camera import CameraMoveDetector
+
+    face = (260, 100, 380, 240)
+    # driver turns away (face lost) but the cabin behind stays put: NOT a camera move
+    d = CameraMoveDetector()
+    d.set_reference(_scene(1), "face", face)
+    assert not any(d.update(i / 10, _scene(1), "none", None) for i in range(100))
+    # camera re-mounted: the whole cabin shifts AND the view changes to the side -> move after the hold time
+    d = CameraMoveDetector()
+    d.set_reference(_scene(1), "face", face)
+    moved = [d.update(i / 10, _scene(2), "side", (420, 80, 520, 200)) for i in range(60)]
+    assert any(moved) and moved.index(True) >= 30  # ~3 s, not instantly
+    # scenery/lighting changes but the driver sits exactly where they were: NOT a move
+    d = CameraMoveDetector()
+    d.set_reference(_scene(1), "face", face)
+    assert not any(d.update(i / 10, _scene(3), "face", face) for i in range(100))

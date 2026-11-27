@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from . import auth, quality
-from .db import Device, Event, Sample, Trip, User, make_sessionmaker
+from .db import Device, Event, ModelVersion, Sample, Trip, User, make_sessionmaker
 
 STATIC = Path(__file__).parent / "static"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -57,6 +57,10 @@ class Kss(BaseModel):
 
 class Feedback(BaseModel):
     feedback: str = Field(pattern="^(correct|false_alarm)$")
+
+
+class Status(BaseModel):
+    status: str = Field(pattern="^(approved|rejected|retired)$")
 
 
 def create_app(db_url: str | None = None) -> FastAPI:
@@ -298,6 +302,53 @@ def create_app(db_url: str | None = None) -> FastAPI:
         fa = s.execute(select(Event.kind, func.count()).where(Event.feedback == "false_alarm").group_by(Event.kind)).all()
         return {"accepted_by_label": {quality.LABELS[k]: v for k, v in acc.items()}, "drivers": drivers,
                 "rejected_by_reason": dict(rej), "false_alarms_by_kind": dict(fa), "rules": quality.RULES}
+
+    # ------------------------------------------------------------------ model registry (continuous improvement)
+    def _mv(m: ModelVersion) -> dict:
+        return {"id": m.id, "kind": m.kind, "version": m.version, "status": m.status, "created_at": m.created_at,
+                "sha256": m.sha256, "metrics": m.metrics, "data": m.data, "notes": m.notes}
+
+    @app.get("/api/models/latest")
+    def latest_model(kind: str = "temporal", d: Device = Depends(current_device), s=Depends(db)):
+        """For devices: the approved model to use (download with /api/models/{id}/download, check the SHA-256)."""
+        m = s.scalar(select(ModelVersion).where(ModelVersion.kind == kind, ModelVersion.status == "approved")
+                     .order_by(ModelVersion.version.desc()))
+        if m is None:
+            raise HTTPException(404, "no approved model yet")
+        return _mv(m)
+
+    @app.get("/api/models/{model_id}/download")
+    def download_model(model_id: str, d: Device = Depends(current_device), s=Depends(db)):
+        m = s.get(ModelVersion, model_id)
+        if m is None or m.status != "approved" or not Path(m.path).is_file():
+            raise HTTPException(404, "model not available")
+        return FileResponse(m.path, media_type="application/octet-stream", filename=f"{m.kind}_v{m.version}.pt")
+
+    @app.get("/api/admin/models")
+    def models(_: User = Depends(admin), s=Depends(db)):
+        return [_mv(m) for m in s.scalars(select(ModelVersion).order_by(ModelVersion.created_at.desc()).limit(50))]
+
+    @app.post("/api/admin/models/{model_id}/status")
+    def set_model_status(model_id: str, body: Status, _: User = Depends(admin), s=Depends(db)):
+        """Manual override, e.g. roll back to an earlier version."""
+        m = s.get(ModelVersion, model_id)
+        if m is None:
+            raise HTTPException(404, "no such model")
+        if body.status == "approved":
+            for other in s.scalars(select(ModelVersion).where(ModelVersion.kind == m.kind, ModelVersion.status == "approved")):
+                other.status = "retired"
+        m.status = body.status
+        s.commit()
+        return _mv(m)
+
+    @app.get("/api/admin/overview")
+    def overview(_: User = Depends(admin), s=Depends(db)):
+        return {"users": s.scalar(select(func.count()).select_from(User)),
+                "devices": s.scalar(select(func.count()).select_from(Device).where(Device.revoked.is_(False))),
+                "trips": s.scalar(select(func.count()).select_from(Trip)),
+                "alerts": s.scalar(select(func.count()).select_from(Event)),
+                "false_alarms": s.scalar(select(func.count()).select_from(Event).where(Event.feedback == "false_alarm")),
+                "rated": s.scalar(select(func.count()).select_from(Event).where(Event.feedback.is_not(None)))}
 
     # ------------------------------------------------------------------ dashboard
     @app.get("/api/health")

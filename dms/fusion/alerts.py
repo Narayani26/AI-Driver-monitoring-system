@@ -25,6 +25,7 @@ MESSAGES = {
     "no_seatbelt": ("warning", "chime", "Please fasten your seatbelt.", "Seatbelts reduce the risk of death in a crash by about half."),
     "stress": ("caution", "soft", "You seem stressed.", "Take a slow, deep breath. Reduce speed and keep a safe distance."),
     "no_driver": ("caution", "soft", "Driver not visible.", "Check that the camera can see your face."),
+    "camera_moved": ("caution", "soft", "Camera moved. Re-learning your position.", "Keep driving normally; full monitoring resumes in a few seconds."),
     # audio (opt-in)
     "snoring": ("critical", "alarm", "Wake up! Snoring detected.", "You may be falling asleep. Pull over safely now."),
     "shouting": ("caution", "soft", "Raised voices detected.", "Stay calm and keep your focus on the road. The conversation can wait."),

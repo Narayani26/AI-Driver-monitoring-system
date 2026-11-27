@@ -26,6 +26,7 @@ import numpy as np
 import torch
 
 from .data.transforms import to_batch
+from .features.camera import CameraMoveDetector
 from .features.geometry import LEFT_EYE, RIGHT_EYE, FrameFeatures, compute_features
 from .features.temporal import (Calibrator, DriverProfile, EyeClosureTracker, FeatureSequence, GlanceTracker, HeadCalibrator,
                                 HeadNodTracker, YawnTracker)
@@ -118,6 +119,8 @@ class FrameResult:
     head_drop: float | None = None  # head lengths below the driver's normal position (side mode)
     nodding: bool = False
     nods: int = 0
+    primary: str | None = None  # the view the driver was calibrated in (face | side); the other one counts as "turned away"
+    camera_moved: bool = False  # the camera was moved: position is being re-learned
     obs: FaceObservation | None = field(default=None, repr=False)
 
     def to_log(self) -> dict:
@@ -269,6 +272,8 @@ class DriverMonitor:
         self._head: HeadObservation | None = None
         self._head_t = self._face_seen_t = -1e9
         self._side_eye_p: float | None = None
+        self.cam = CameraMoveDetector()
+        self._primary: str | None = None
         self.cabin_model = self._load(cfg.cabin_ckpt)
         self.temporal_model = self._load(cfg.temporal_ckpt)
         self.drowsy_model, drowsy_ck = checkpoint.load(cfg.drowsy_ckpt) if cfg.drowsy_ckpt else (None, None)
@@ -388,6 +393,8 @@ class DriverMonitor:
         self._head, self._head_t, self._face_seen_t, self._side_eye_p = None, -1e9, -1e9, None
         if self.head_model is not None:
             self.head_model.reset()
+        self.cam.reset()
+        self._primary = None
         self.jolt.reset()
         if self.mishap is not None:
             self.mishap = MishapDetector()
@@ -406,6 +413,19 @@ class DriverMonitor:
     @property
     def profile(self) -> DriverProfile | None:
         return self.calibrator.profile
+
+    def _recalibrate_position(self):
+        """Camera moved: forget the driver's position (and open-eye shape, which depends on the
+        viewing angle) but keep the trip, its report and the risk history."""
+        self.calibrator = Calibrator(self.cfg.calib_seconds)
+        self.head_cal = HeadCalibrator(self.cfg.calib_seconds)
+        self._build_trackers()
+        self.seq = FeatureSequence(self.cfg.seq_len, self.cfg.seq_rate_hz)
+        self.window = TrainingWindow(self.cfg.seq_len / self.cfg.seq_rate_hz, self.cfg.seq_rate_hz)
+        self._primary, self._alert_p = None, None
+        self.landmarker.reset_driver()
+        if self.head_model is not None:
+            self.head_model.reset()
 
     def _frontal(self, f: FrameFeatures, prof: DriverProfile) -> bool:
         """Is the face close enough to the calibrated pose for eye/mouth shape to be trusted?"""
@@ -511,7 +531,21 @@ class DriverMonitor:
         if face_box is None and head is not None:
             face_box = head.face_box(frame.shape)
         behaviours = behaviour_scores(self._dets, face_box, frame.shape)
-        driver_seen = obs is not None or head is not None
+
+        # --- camera moved since calibration? then re-learn the position (trip and report are kept) ---
+        if self.cam.update(t, frame, mode, face_box, head.box if head is not None else None):
+            self._recalibrate_position()
+            moved = self.alerter._fire("camera_moved", t, f"background match {self.cam.last_ncc:.2f}")
+            res = FrameResult(t=t, calibrating=0.0, features=feats, risk=None, obs=obs, fps=self._fps, detections=self._dets,
+                              behaviours=behaviours, face_box=face_box, mode=mode, head=head, camera_moved=True,
+                              alerts=[moved] if moved else [])
+            self.recorder.update(res, res.alerts, behaviours, 0.0, 0.0)
+            return res
+        # the view the driver was calibrated in is "looking at the road"; seeing them in the other view means turned away
+        primary = self._primary
+        if primary == "face" and mode == "side":
+            mode, head = "none", None  # face lost, only the side of the head visible: turned away
+        driver_seen = (mode == primary) if primary else mode != "none"
 
         res = FrameResult(t=t, calibrating=None, features=feats, risk=None, obs=obs, fps=self._fps,
                           detections=self._dets, behaviours=behaviours, face_box=face_box, mode=mode, head=head,
@@ -523,20 +557,29 @@ class DriverMonitor:
             k = int(np.argmax(self._cabin_p))
             res.cabin, res.cabin_conf = CABIN_CLASSES[k], float(self._cabin_p[k])
 
-        # --- calibration: learns the driver's normal position from whatever angle the camera has ---
-        if obs is not None and not self.calibrator.done:
-            self.calibrator.update(t, feats)
-        if head is not None and not self.head_cal.done:
-            self.head_cal.update(t, head.droop)
-        if mode == "face" and not self.calibrator.done:
-            res.calibrating = self.calibrator.progress(t)
-            return res
-        if mode == "side" and not self.head_cal.done:
-            res.calibrating = self.head_cal.progress(t)
-            return res
-        if mode == "none" and not (self.calibrator.done or self.head_cal.done):
-            res.calibrating = 0.0  # still looking for the driver: no risk shown, nothing is "safe" yet
-            return res
+        # --- calibration: learns the driver's normal position from whatever angle the camera has.
+        # Whichever view (frontal face or side of the head) finishes first becomes the primary view.
+        if self._primary is None:
+            if obs is not None:
+                self.calibrator.update(t, feats)
+            if head is not None:
+                self.head_cal.update(t, head.droop)
+            if self.calibrator.done or self.head_cal.done:
+                self._primary = "face" if self.calibrator.done else "side"
+                if self._primary == "face":
+                    self.head_cal = HeadCalibrator(self.cfg.calib_seconds)
+                else:
+                    self.calibrator = Calibrator(self.cfg.calib_seconds)
+            else:
+                res.calibrating = (self.calibrator.progress(t) if mode == "face" else self.head_cal.progress(t) if mode == "side" else 0.0)
+                return res  # still learning (or still looking for the driver): no risk shown, nothing is "safe" yet
+        primary = self._primary
+        res.primary = primary
+        if not self.cam.armed and mode == primary:
+            self.cam.set_reference(frame, mode, face_box, head.box if head is not None else None)
+        if primary == "side" and mode == "face":
+            obs, head = None, None  # side-mounted camera sees a frontal face: the driver turned towards the side
+            feats = FrameFeatures(face=False)
         prof = self.profile or DriverProfile()
 
         # --- temporal indicators ----------------------------------------------
@@ -550,10 +593,10 @@ class DriverMonitor:
         else:
             self.eyes.pause()
             self.yawn.pause()
-        if head is not None and self.head_cal.done:
+        if head is not None and primary == "side":
             res.head_drop = head.droop - self.head_cal.droop0
             self.nod.update(t, res.head_drop)
-        elif obs is not None:
+        else:
             self.nod.pause()
         res.nodding, res.nods = self.nod.nodding, self.nod.count()
         if feats.face:
@@ -606,8 +649,9 @@ class DriverMonitor:
             mishap_events = self.mishap.pop_events()
         res.alerts = self.alerter.update(
             t, risk=res.risk, microsleep=self.eyes.in_microsleep, closed_duration=self.eyes.closed_duration,
-            long_distraction=g.long_distraction, vats=g.vats_distraction, off_road_duration=g.off_road_duration,
-            yawns_5min=res.yawns, face=driver_seen, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
+            # while a camera move is suspected, "look at the road" waits (the view, not the driver, changed)
+            long_distraction=g.long_distraction and not self.cam.pending, vats=g.vats_distraction and not self.cam.pending,
+            off_road_duration=g.off_road_duration, yawns_5min=res.yawns, face=driver_seen or self.cam.pending, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
             behaviours=behaviours, audio_groups=audio_groups, mishap_events=mishap_events, head_nod=res.nodding,
         )
         self.recorder.update(res, res.alerts, behaviours, g.off_road_duration, self.eyes.closed_duration)

@@ -1,0 +1,22 @@
+# Weekly retraining on the cloud server (runs next to the backend; see docs/BACKEND.md).
+# Install:  sudo cp deploy/dms-retrain.service deploy/dms-retrain.timer /etc/systemd/system/
+#           sudo systemctl enable --now dms-retrain.timer
+# Secrets (DMS_DATABASE_URL, DMS_MODEL_DIR) come from /etc/dms/cloud.env (chmod 600), never from this file.
+[Unit]
+Description=Retrain the drowsiness model on consented real-drive data, approve only if better
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=dms
+WorkingDirectory=/opt/dms
+EnvironmentFile=/etc/dms/cloud.env
+ExecStart=/opt/dms/.venv/bin/python -m dms.cloud.retrain --base /opt/dms/features/rldd \
+          --work /var/lib/dms/retrain
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/dms
+StateDirectory=dms

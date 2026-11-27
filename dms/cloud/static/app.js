@@ -62,11 +62,77 @@ async function load() {
   $("who").textContent = `${me.name || me.email}${me.role === "admin" ? " · admin" : ""}`;
   $("consent").checked = me.consent_training;
   await Promise.all([loadStats(), loadDevices(), loadTrips()]);
-  if (me.role === "admin") { $("admin-card").classList.remove("hidden"); $("dataset").textContent = JSON.stringify(await api("/api/admin/dataset"), null, 2); }
+  if (me.role === "admin") { $("admin-card").classList.remove("hidden"); await loadAdmin(); }
+}
+
+function bars(el, entries, cls = "") {
+  const max = Math.max(1, ...entries.map(([, v]) => v));
+  el.innerHTML = entries.length ? entries.map(([k, v]) => `<div class="hbar-row"><span>${esc(String(k).replace(/_/g, " "))}</span>
+    <div class="hbar-track"><div class="hbar-fill ${cls}" data-w="${(100 * v / max).toFixed(1)}"></div></div><b>${v}</b></div>`).join("")
+    : '<p class="muted small">nothing yet</p>';
+  el.querySelectorAll("[data-w]").forEach((d) => { d.style.width = d.dataset.w + "%"; }); // CSP: no inline style attributes
+}
+
+function trend(el, trips) {
+  const pts = trips.filter((t) => t.safety_score != null).slice(0, 30).reverse();
+  if (!pts.length) { el.innerHTML = '<p class="muted small">no trips yet</p>'; return; }
+  const W = 600, H = 140, pad = 22, bw = Math.max(4, (W - pad) / pts.length - 4);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "safety score per trip");
+  for (const y of [0, 50, 100]) {
+    const yy = H - 16 - (y / 100) * (H - 26);
+    const l = document.createElementNS(ns, "line");
+    Object.entries({ x1: pad, x2: W, y1: yy, y2: yy, class: "axis" }).forEach(([k, v]) => l.setAttribute(k, v));
+    const tx = document.createElementNS(ns, "text");
+    Object.entries({ x: 0, y: yy + 3, class: "axis-label" }).forEach(([k, v]) => tx.setAttribute(k, v));
+    tx.textContent = y;
+    svg.append(l, tx);
+  }
+  pts.forEach((t, i) => {
+    const h = (t.safety_score / 100) * (H - 26);
+    const r = document.createElementNS(ns, "rect");
+    Object.entries({ x: pad + 4 + i * (bw + 4), y: H - 16 - h, width: bw, height: h, rx: 2,
+      class: "trend-bar" + (t.safety_score < 60 ? " bad" : t.safety_score < 80 ? " low" : "") }).forEach(([k, v]) => r.setAttribute(k, v));
+    const tip = document.createElementNS(ns, "title");
+    tip.textContent = `${when(t.t_end)}: ${t.safety_score}`;
+    r.append(tip);
+    svg.append(r);
+  });
+  el.classList.add("trend");
+  el.replaceChildren(svg);
+}
+
+async function loadAdmin() {
+  const [o, ds, ms] = await Promise.all([api("/api/admin/overview"), api("/api/admin/dataset"), api("/api/admin/models")]);
+  $("admin-stats").innerHTML = [["Users", o.users], ["Devices", o.devices], ["Trips", o.trips], ["Alerts", o.alerts],
+    ["Rated by drivers", o.rated], ["False alarms", o.false_alarms], ["Drivers giving data", ds.drivers]]
+    .map(([k, v]) => `<div><b>${v ?? 0}</b><span class="muted small">${k}</span></div>`).join("");
+  bars($("ds-labels"), Object.entries(ds.accepted_by_label));
+  bars($("ds-fa"), Object.entries(ds.false_alarms_by_kind).sort((a, b) => b[1] - a[1]), "bad");
+  const rej = Object.entries(ds.rejected_by_reason);
+  $("ds-rejects").innerHTML = rej.length ? "<tr><th>Reason</th><th>Windows</th></tr>" + rej.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join("")
+    : '<tr><td class="muted">none rejected</td></tr>';
+  const f = (m, k) => (m && m[k] != null ? (k === "false_alarm_rate" ? (100 * m[k]).toFixed(1) + "%" : m[k].toFixed(3)) : "–");
+  $("models").innerHTML = ms.length ? "<tr><th>Version</th><th>Status</th><th>Macro-F1 new / old</th><th>False alarms new / old</th><th>Decision</th><th></th></tr>" +
+    ms.map((m) => `<tr><td>${esc(m.kind)} v${m.version}<div class="muted small">${when(m.created_at)}</div></td><td class="status-${esc(m.status)}">${esc(m.status)}</td>
+      <td>${f(m.metrics.candidate, "window_macro_f1")} / ${f(m.metrics.current, "window_macro_f1")}</td>
+      <td>${f(m.metrics.candidate, "false_alarm_rate")} / ${f(m.metrics.current, "false_alarm_rate")}</td>
+      <td class="small">${esc(m.metrics.decision || "")}</td>
+      <td>${m.status === "approved" ? "" : `<button class="btn small" data-approve="${esc(m.id)}">${m.status === "retired" ? "Roll back to this" : "Approve"}</button>`}</td></tr>`).join("")
+    : '<tr><td class="muted">No models yet. Run <code>python -m dms.cloud.retrain</code> once drivers have shared data.</td></tr>';
+  document.querySelectorAll("[data-approve]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Make this the model every device downloads?")) return;
+    await api(`/api/admin/models/${b.dataset.approve}/status`, { method: "POST", body: { status: "approved" } });
+    loadAdmin();
+  }));
 }
 
 async function loadStats() {
   const s = await api("/api/stats");
+  bars($("kinds"), Object.entries(s.alerts_by_kind).filter(([k]) => k !== "feedback").sort((a, b) => b[1] - a[1]));
   const alerts = Object.values(s.alerts_by_kind).reduce((a, b) => a + b, 0);
   const fa = s.feedback.false_alarm || 0;
   $("stats").innerHTML = [["Trips", s.trips], ["Alerts", alerts], ["Marked wrong", fa], ["Samples shared", s.training_samples_given]]
@@ -99,6 +165,7 @@ $("dev-form").onsubmit = async (e) => {
 
 async function loadTrips() {
   const ts = await api("/api/trips");
+  trend($("trend"), ts);
   $("trips").innerHTML = ts.length
     ? "<tr><th>Ended</th><th>Duration</th><th>Safety score</th><th>Alerts</th><th>Sleepiness (KSS)</th></tr>" + ts.map((t) =>
       `<tr class="click" data-trip="${esc(t.id)}"><td>${when(t.t_end)}</td><td>${dur(t.duration_s)}</td><td>${t.safety_score ?? "–"}</td>

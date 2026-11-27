@@ -115,7 +115,7 @@ class HeadNodTracker:
     driver's own normal position (measured on a falling-asleep clip: alert -0.15, nodding +0.25).
     A nod held for `min_s` is a microsleep-equivalent event."""
 
-    def __init__(self, delta: float = 0.25, min_s: float = 1.5, window_s: float = 300.0):
+    def __init__(self, delta: float = 0.22, min_s: float = 1.5, window_s: float = 300.0):
         self.delta, self.min_s, self.window_s = delta, min_s, window_s
         self._since: float | None = None
         self._counted = False

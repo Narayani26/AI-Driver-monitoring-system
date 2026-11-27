@@ -51,6 +51,17 @@
       <div id="new-key" class="key hidden"></div>
     </div>
 
+    <div class="grid">
+      <div class="card">
+        <h3>Safety score per trip <span class="muted small">(100 = no risk)</span></h3>
+        <div id="trend" class="chart"></div>
+      </div>
+      <div class="card">
+        <h3>Alerts by type</h3>
+        <div id="kinds" class="chart"></div>
+      </div>
+    </div>
+
     <div class="card">
       <h3>Trips</h3>
       <table id="trips"></table>
@@ -65,10 +76,26 @@
       <table id="events"></table>
     </div>
 
-    <div class="card hidden" id="admin-card">
-      <h3>Training data quality <span class="muted small">(admin)</span></h3>
-      <pre id="dataset"></pre>
-    </div>
+    <section class="hidden" id="admin-card">
+      <h2 class="section">Admin</h2>
+      <div class="card"><div class="stats" id="admin-stats"></div></div>
+      <div class="grid">
+        <div class="card">
+          <h3>Training data <span class="muted small">accepted windows by label</span></h3>
+          <div id="ds-labels" class="chart"></div>
+          <h3 class="mt">Rejected by the quality gate</h3>
+          <table id="ds-rejects"></table>
+        </div>
+        <div class="card">
+          <h3>False alarms reported by drivers</h3>
+          <div id="ds-fa" class="chart"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Model registry <span class="muted small">devices download only the approved version</span></h3>
+        <table id="models"></table>
+      </div>
+    </section>
   </section>
 </main>
 <script src="/static/app.js"></script>

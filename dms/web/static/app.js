@@ -76,10 +76,12 @@ function onResult(r) {
   if (img) drawOverlay(img, r);
   $("perf").textContent = `${r.proc_ms.toFixed(0)} ms/frame · ${r.fps ? r.fps.toFixed(0) : "–"} FPS`;
 
+  setModeBadge(r);
   const cal = $("calib");
   if (r.calibrating != null) {
     cal.classList.remove("hidden"); $("calib-bar").style.width = (r.calibrating * 100).toFixed(0) + "%";
-    $("calib-text").textContent = r.mode === "none" ? "Looking for the driver… make sure the camera can see the driver's head"
+    $("calib-text").textContent = r.camera_moved || S.recentMove ? "Camera moved — re-learning the driver's position…"
+      : r.mode === "none" ? "Looking for the driver… make sure the camera can see the driver's head"
       : r.mode === "side" ? "Side view: learning the driver's normal head position — just drive normally"
       : "Learning the driver's normal position — just drive normally";
   }
@@ -279,6 +281,17 @@ function updateStats(r) {
     const v = p ? p[e] : 0;
     return `<div class="row ${p && e === r.emotion ? "top" : ""}"><span>${e}</span><div class="hbar"><div style="width:${(v * 100).toFixed(0)}%"></div></div><b>${(v * 100).toFixed(0)}%</b></div>`;
   }).join("");
+}
+function setModeBadge(r) {
+  const b = $("mode-badge");
+  if (r.camera_moved) S.recentMove = true;
+  if (r.calibrating == null) S.recentMove = false;
+  let txt, cls;
+  if (S.recentMove) [txt, cls] = ["camera moved · re-learning", "warn"];
+  else if (r.calibrating != null) [txt, cls] = [r.mode === "none" ? "looking for driver" : `learning position · ${r.mode === "side" ? "side view" : "front view"}`, "info"];
+  else if (r.primary === "side") [txt, cls] = [r.mode === "side" ? "side view · monitoring" : "side view · driver turned", r.mode === "side" ? "ok" : "warn"];
+  else [txt, cls] = [r.face ? "front view · monitoring" : "front view · face not visible", r.face ? "ok" : "warn"];
+  b.textContent = txt; b.className = "badge " + cls;
 }
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 

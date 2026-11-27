@@ -162,3 +162,63 @@ def test_training_window_snapshot():
 
     ok, why, _ = check({**snap, "label": 0, "label_source": "kss"})
     assert not ok and "face" in why  # no face in view -> not a training sample
+
+
+def test_retraining_pipeline_end_to_end(client, tmp_path, monkeypatch):
+    """Real-drive windows -> export split by driver -> train -> compare -> approve -> device downloads + verifies."""
+    import hashlib
+
+    monkeypatch.setenv("DMS_MODEL_DIR", str(tmp_path / "models"))
+    rng = np.random.default_rng(0)
+
+    def win(label, k):
+        raw = []
+        for i in range(300):  # drowsy windows: long eye closures; alert: open eyes with short blinks
+            closed = (i % 60 < 25) if label == 2 else (i % 40 == 0)
+            raw.append([0.08 if closed else 0.28 + 0.01 * rng.standard_normal(), 0.05, 1.0, 2.0, 0.0, 0.5, 0.5, 0.9 if closed else 0.1, 0.0])
+        return {"id": f"w{k}", "session": "trip", "label": label, "label_source": "kss", "raw": raw, "present": [True] * 300,
+                "fps": 10.0, "profile": [0.28, 0.05, 0.0, 0.0, 100], "meta": {"frontal_frac": 1.0, "max_faces": 1, "driver_switches": 0}}
+
+    k = 0
+    for d in range(10):
+        h = _user(client, f"driver{d}@example.com")
+        client.patch("/api/me", json={"consent_training": True}, headers=h)
+        dev = _device(client, h)
+        samples = []
+        for label in (0, 2):
+            for _ in range(3):
+                samples.append(win(label, k))
+                k += 1
+        assert client.post("/api/ingest", json={"samples": samples}, headers=dev).json()["samples"]["accepted"] == 6
+
+    from types import SimpleNamespace
+
+    from dms.cloud.retrain import run
+
+    a = SimpleNamespace(db_url=client.db_url, work=str(tmp_path / "work"), base=None, current=None, model="hybrid", epochs=3,
+                        steps_per_epoch=15, test_frac=0.3, min_drivers=3, min_test_drivers=1, min_f1=0.0, max_fa_increase=0.02)
+    r = run(a)
+    assert r["status"] == "approved", r
+    assert r["data"]["fleet_train_drivers"] >= 3 and r["data"]["fleet_test_drivers"] >= 1
+
+    # a device fetches the approved model and can verify it
+    h = _user(client, "owner@example.com")
+    dev = _device(client, h)
+    meta = client.get("/api/models/latest", headers=dev).json()
+    blob = client.get(f"/api/models/{meta['id']}/download", headers=dev).content
+    assert hashlib.sha256(blob).hexdigest() == meta["sha256"] and meta["version"] == 1
+    assert client.get("/api/models/latest", headers=h).status_code == 401  # user tokens are not device keys
+
+    # not enough drivers -> nothing is trained or registered
+    a.min_drivers = 50
+    assert run(a)["status"] == "skipped"
+
+
+def test_promotion_rule():
+    from dms.cloud.retrain import decide
+
+    cur = {"window_macro_f1": 0.80, "false_alarm_rate": 0.05}
+    assert decide({"window_macro_f1": 0.83, "false_alarm_rate": 0.05}, cur, 0.6, 0.02)[0]
+    assert not decide({"window_macro_f1": 0.78, "false_alarm_rate": 0.02}, cur, 0.6, 0.02)[0]  # worse overall
+    assert not decide({"window_macro_f1": 0.85, "false_alarm_rate": 0.10}, cur, 0.6, 0.02)[0]  # more false alarms
+    assert not decide({"window_macro_f1": 0.55, "false_alarm_rate": 0.0}, None, 0.6, 0.02)[0]  # below the floor

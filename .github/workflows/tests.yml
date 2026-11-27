@@ -46,7 +46,7 @@ jobs:
           cache: pip
       - name: Install backend dependencies
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install timm numpy pandas scikit-learn matplotlib pytest fastapi httpx uvicorn sqlalchemy "psycopg[binary]" opencv-python-headless
       - name: Backend tests on PostgreSQL
         env:

@@ -96,6 +96,22 @@ class Sample(Base):
     reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class ModelVersion(Base):
+    """Model registry: every retrained candidate, its test results and whether it was approved.
+    Devices download only `approved` versions, verified by SHA-256."""
+    __tablename__ = "model_versions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    kind: Mapped[str] = mapped_column(String(16), default="temporal", index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    status: Mapped[str] = mapped_column(String(16), default="candidate", index=True)  # candidate | approved | rejected | retired
+    path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)  # candidate vs current model on held-out real drivers
+    data: Mapped[dict] = mapped_column(JSON, default=dict)  # what it was trained on
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+
 def database_url() -> str:
     url = os.environ.get("DMS_DATABASE_URL")
     if url:

@@ -100,6 +100,8 @@ def serialize(r: FrameResult, shape, proc_ms: float, timings: dict | None = None
         "alerts": [a.as_dict() for a in r.alerts],
         "timings": {k: round(v, 1) for k, v in (timings or {}).items()},
         "mode": r.mode,
+        "primary": r.primary,
+        "camera_moved": r.camera_moved,
         "head_drop": _num(r.head_drop, 3),
         "nodding": r.nodding,
         "nods": r.nods,

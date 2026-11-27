@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly drowsiness-model retraining
+
+[Timer]
+OnCalendar=Sun 03:17
+Persistent=true
+
+[Install]
+WantedBy=timers.target
