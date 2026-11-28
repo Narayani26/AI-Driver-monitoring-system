@@ -60,9 +60,16 @@ async function load() {
   const me = await api("/api/me");
   show(true);
   $("who").textContent = `${me.name || me.email}${me.role === "admin" ? " · admin" : ""}`;
+  $("hello").textContent = `Hi ${me.name || me.email.split("@")[0]}, here is your driving`;
   $("consent").checked = me.consent_training;
   await Promise.all([loadStats(), loadDevices(), loadTrips()]);
   if (me.role === "admin") { $("admin-card").classList.remove("hidden"); await loadAdmin(); }
+}
+
+function scorePill(v) {
+  if (v == null) return "–";
+  const c = v >= 80 ? "good" : v >= 60 ? "warn" : "bad";
+  return `<span class="score ${c}">${Math.round(v)}</span>`;
 }
 
 function bars(el, entries, cls = "") {
@@ -107,9 +114,9 @@ function trend(el, trips) {
 
 async function loadAdmin() {
   const [o, ds, ms] = await Promise.all([api("/api/admin/overview"), api("/api/admin/dataset"), api("/api/admin/models")]);
-  $("admin-stats").innerHTML = [["Users", o.users], ["Devices", o.devices], ["Trips", o.trips], ["Alerts", o.alerts],
-    ["Rated by drivers", o.rated], ["False alarms", o.false_alarms], ["Drivers giving data", ds.drivers]]
-    .map(([k, v]) => `<div><b>${v ?? 0}</b><span class="muted small">${k}</span></div>`).join("");
+  $("admin-stats").innerHTML = [["Users", o.users, "blue"], ["Devices", o.devices, "blue"], ["Trips", o.trips, "blue"], ["Alerts", o.alerts, "amber"],
+    ["Rated by drivers", o.rated, "green"], ["False alarms", o.false_alarms, "red"], ["Drivers giving data", ds.drivers, "green"]]
+    .map(([k, v, c]) => `<div class="kpi ${c}"><b>${v ?? 0}</b><span>${k}</span></div>`).join("");
   bars($("ds-labels"), Object.entries(ds.accepted_by_label));
   bars($("ds-fa"), Object.entries(ds.false_alarms_by_kind).sort((a, b) => b[1] - a[1]), "bad");
   const rej = Object.entries(ds.rejected_by_reason);
@@ -135,8 +142,8 @@ async function loadStats() {
   bars($("kinds"), Object.entries(s.alerts_by_kind).filter(([k]) => k !== "feedback").sort((a, b) => b[1] - a[1]));
   const alerts = Object.values(s.alerts_by_kind).reduce((a, b) => a + b, 0);
   const fa = s.feedback.false_alarm || 0;
-  $("stats").innerHTML = [["Trips", s.trips], ["Alerts", alerts], ["Marked wrong", fa], ["Samples shared", s.training_samples_given]]
-    .map(([k, v]) => `<div><b>${v}</b><span class="muted small">${k}</span></div>`).join("");
+  $("stats").innerHTML = [["Trips", s.trips, "blue"], ["Alerts", alerts, "amber"], ["Marked wrong", fa, "red"], ["Samples shared", s.training_samples_given, "green"]]
+    .map(([k, v, c]) => `<div class="kpi ${c}"><b>${v}</b><span>${k}</span></div>`).join("");
 }
 
 async function loadDevices() {
@@ -170,7 +177,7 @@ async function loadTrips() {
   trend($("trend"), ts);
   $("trips").innerHTML = ts.length
     ? "<tr><th>Ended</th><th>Duration</th><th>Safety score</th><th>Alerts</th><th>Sleepiness (KSS)</th></tr>" + ts.map((t) =>
-      `<tr class="click" data-trip="${esc(t.id)}"><td>${when(t.t_end)}</td><td>${dur(t.duration_s)}</td><td>${t.safety_score ?? "–"}</td>
+      `<tr class="click" data-trip="${esc(t.id)}"><td>${when(t.t_end)}</td><td>${dur(t.duration_s)}</td><td>${scorePill(t.safety_score)}</td>
        <td>${t.alerts_total ?? 0}</td><td>${t.kss ?? "–"}</td></tr>`).join("")
     : '<tr><td class="muted">No trips uploaded yet.</td></tr>';
   document.querySelectorAll("[data-trip]").forEach((r) => (r.onclick = () => openTrip(r.dataset.trip)));
@@ -191,7 +198,7 @@ async function openTrip(id) {
   $("kss").value = t.kss ?? "";
   $("events").innerHTML = t.events.length
     ? "<tr><th>Time</th><th>Alert</th><th>Detail</th><th>Was it right?</th></tr>" + t.events.map((e) =>
-      `<tr><td>${e.t_session != null ? dur(e.t_session) : when(e.t_wall)}</td><td class="sev-${esc(e.severity)}">${esc(e.kind.replace(/_/g, " "))}</td>
+      `<tr><td>${e.t_session != null ? dur(e.t_session) : when(e.t_wall)}</td><td><span class="pill sev-${esc(e.severity)}">${esc(e.kind.replace(/_/g, " "))}</span></td>
        <td class="muted">${esc(e.detail)}</td>
        <td>${e.feedback ? esc(e.feedback.replace("_", " ")) : `<button class="btn small" data-fb="correct" data-ev="${esc(e.id)}">✓ right</button>
          <button class="btn small" data-fb="false_alarm" data-ev="${esc(e.id)}">✗ wrong</button>`}</td></tr>`).join("")

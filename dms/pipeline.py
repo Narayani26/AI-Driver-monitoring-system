@@ -432,11 +432,29 @@ class DriverMonitor:
             self._last_face = (t, bbox_from_points(obs.landmarks, frame.shape, 0.1))
         return obs
 
+    def dismiss(self, kind: str, t: float | None = None):
+        """The driver says an alert was wrong (taps "Not true"): act on it now. The alert is
+        paused for 3 minutes and the evidence behind it is reset, so the risk score drops at once."""
+        t = self._last_t if t is None else t
+        if t is None:
+            return
+        self.alerter.mute(kind, t)
+        self.fusion.driver_dismissed()
+        p = SENSITIVITY.get(self.cfg.sensitivity, SENSITIVITY["normal"])
+        if kind in ("drowsy", "microsleep", "yawning", "head_nod", "snoring"):
+            self.eyes = EyeClosureTracker(microsleep_s=p["microsleep_s"])  # PERCLOS built on wrong eye readings
+            self.yawn = YawnTracker(min_s=p["yawn_min_s"])
+            self.nod = HeadNodTracker(min_s=max(p["microsleep_s"] + 0.5, 1.2))
+        if kind in ("eyes_off_road", "glances"):
+            self.glance = GlanceTracker(long_s=p["long_s"], vats_cum_s=p["vats_cum_s"])
+
     def _recalibrate_position(self):
         """Camera moved: forget the driver's position (and open-eye shape, which depends on the
-        viewing angle) but keep the trip, its report and the risk history."""
-        self.calibrator = Calibrator(self.cfg.calib_seconds)
-        self.head_cal = HeadCalibrator(self.cfg.calib_seconds)
+        viewing angle) but keep the trip, its report and the risk history. Re-learning is quicker
+        than a first calibration (the driver is already driving normally)."""
+        quick = min(self.cfg.calib_seconds, 3.0)
+        self.calibrator = Calibrator(quick, min_samples=30)
+        self.head_cal = HeadCalibrator(quick)
         self._build_trackers()
         self.seq = FeatureSequence(self.cfg.seq_len, self.cfg.seq_rate_hz)
         self.window = TrainingWindow(self.cfg.seq_len / self.cfg.seq_rate_hz, self.cfg.seq_rate_hz)
@@ -565,9 +583,13 @@ class DriverMonitor:
             return res
         # the view the driver was calibrated in is "looking at the road"; seeing them in the other view means turned away
         primary = self._primary
+        # face lost but the pose model still sees the head facing forward (both eyes visible):
+        # too dark/small for face points, NOT looking away -> attention unknown, not "off road"
+        head_forward = head is not None and bool((head.kp[[1, 2], 2] >= 0.5).all())
         if primary == "face" and mode == "side":
             mode, head = "none", None  # face lost, only the side of the head visible: turned away
         driver_seen = (mode == primary) if primary else mode != "none"
+        attention_unknown = primary == "face" and mode == "none" and head_forward
 
         res = FrameResult(t=t, calibrating=None, features=feats, risk=None, obs=obs, fps=self._fps,
                           detections=self._dets, behaviours=behaviours, face_box=face_box, mode=mode, head=head,
@@ -629,7 +651,7 @@ class DriverMonitor:
             self.seq.update(t, feats.vector(), prof)
         self.window.update(t, feats, frontal, obs, frame.shape[1])
         # side view: no gaze angles, but the driver is there (not "looking away")
-        g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=driver_seen)
+        g = self.glance.update(t, feats.yaw, feats.pitch, prof, face=driver_seen or attention_unknown)
 
         if self._alert_p is not None:
             names = ALERTNESS_CLASSES if len(self._alert_p) == 3 else ("alert", "drowsy")
@@ -677,7 +699,7 @@ class DriverMonitor:
             t, risk=res.risk, microsleep=self.eyes.in_microsleep, closed_duration=self.eyes.closed_duration,
             # while a camera move is suspected, "look at the road" waits (the view, not the driver, changed)
             long_distraction=g.long_distraction and not self.cam.pending, vats=g.vats_distraction and not self.cam.pending,
-            off_road_duration=g.off_road_duration, yawns_5min=res.yawns, face=driver_seen or self.cam.pending, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
+            off_road_duration=g.off_road_duration, yawns_5min=res.yawns, face=driver_seen or attention_unknown or self.cam.pending, alertness=res.alertness, emotion_probs_affect=res.risk.affect,
             behaviours=behaviours, audio_groups=audio_groups, mishap_events=mishap_events, head_nod=res.nodding,
         )
         self.recorder.update(res, res.alerts, behaviours, g.off_road_duration, self.eyes.closed_duration)

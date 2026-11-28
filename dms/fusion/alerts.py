@@ -61,10 +61,17 @@ class AlertManager:
         self.cooldowns = cooldowns or COOLDOWN_S
         self.drowsy_threshold = drowsy_threshold
         self._last: dict[str, float] = {}
+        self._muted: dict[str, float] = {}
         self._active: dict[str, float] = {}  # kind -> since
         self._hits: dict[str, list[float]] = {}  # audio detections per kind
 
+    def mute(self, kind: str, t: float, seconds: float = 180.0):
+        """Driver said this alert was wrong: don't repeat it for a while."""
+        self._muted[kind] = t + seconds
+
     def _fire(self, kind: str, t: float, detail: str = "") -> Alert | None:
+        if t < self._muted.get(kind, -1e9):
+            return None
         sev, sound, msg, sug = self.messages[kind]
         last = self._last.get(kind)
         if last is not None and t - last < self.cooldowns[sev] and t >= last:

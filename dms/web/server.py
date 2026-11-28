@@ -307,6 +307,8 @@ class Session:
             verdict, at = msg.get("verdict"), msg.get("t")
             if verdict not in ("correct", "false_alarm") or not isinstance(at, (int, float)):
                 return
+            if verdict == "false_alarm" and msg.get("kind") in self.mon.alerter.messages:
+                self.mon.dismiss(str(msg["kind"]))  # react now: score drops, alert paused
             if self.store:
                 self.store.add_event(self.session_id, "feedback", "info", t_session=float(at), alert=str(msg.get("kind", ""))[:32], verdict=verdict)
                 snap = self.snaps.pop(round(float(at), 2), None)

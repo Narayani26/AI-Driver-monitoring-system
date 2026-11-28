@@ -119,7 +119,7 @@ Everything feeds one **0–100 risk score**, with smoothing and levels that don'
 
 | Situation | What the system does |
 |---|---|
-| Calibrated looking at the camera, later the camera is moved to the side | notices the move in about 3 s, says "Camera moved, re-learning your position", re-calibrates in side view (5 s) and keeps monitoring. The trip and report are kept |
+| Calibrated looking at the camera, later the camera is moved to the side | notices the move in 0.75–1.5 s, says "Camera moved, re-learning your position", re-learns in about 3 s (front or side view) and keeps monitoring. The trip and report are kept |
 | Driver turns to look at a phone or a passenger | **not** a camera move (the background is unchanged): "Please look ahead" after 3 s |
 | Mirror checks (< 2 s each) | nothing; many glances (10 s within 30 s): a gentle caution |
 | Head tilted back or down in front of a low webcam | eyes "not judged" (open eyes look closed from below); no false microsleep |
@@ -131,7 +131,10 @@ Everything feeds one **0–100 risk score**, with smoothing and levels that don'
 | Crash sound from the radio or another car | calm "Loud crash sound nearby" notice, no alarm |
 | Real jolt and the driver doesn't respond | "Possible accident" → 15 s countdown → SOS, unless "I'm OK" is pressed |
 | Tunnel or clouds (brightness change) | no re-calibration (the background comparison ignores brightness) |
-| Too many alerts | the same alert can't repeat within 30 s (warnings) or 90 s (cautions); only warnings and critical alerts are spoken |
+| Too many alerts | the same alert can't repeat within 30 s (warnings) or 90 s (cautions); only warnings and critical alerts are spoken; glances under 1.5 s don't move the score |
+| An alert is wrong | the driver taps **"✗ Not true"** (on the pop-up or in the list): the risk score drops at once, the evidence behind it is reset, and that alert pauses for 3 minutes. The rating is stored and, with consent, labels training data |
+| After a real warning, the driver is alert again | the score falls within seconds for distraction and within about 20–30 s after a microsleep (it used to take over a minute) |
+| Dark or wide-angle dash cam, driver small | the system zooms into the driver's head (found by the pose model) and looks again; if the head still faces forward, a missed face counts as "unknown", not "looking away" |
 
 Known limits:
 - **Night driving needs an infrared camera.** A normal webcam can't see the eyes in the dark.

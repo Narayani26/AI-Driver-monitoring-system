@@ -112,8 +112,8 @@ def test_risk_levels_and_hysteresis():
     assert out.level == "CRITICAL" and out.reasons[0].startswith("MICROSLEEP")
     for i in range(20):  # 10 s later: still elevated (recent microsleep), not reset
         out = rf.update(0.2 + i * 0.5, RiskInputs())
-    assert out.level == "WARNING" and any("recent microsleep" in r for r in out.reasons)
-    for i in range(240):  # 2 min later the floor has decayed and hysteresis lets it return to OK
+    assert out.level in ("CAUTION", "WARNING") and any("recent microsleep" in r for r in out.reasons)
+    for i in range(120):  # a minute of alert driving later the floor has decayed: back to OK
         out = rf.update(10.0 + i * 0.5, RiskInputs())
     assert out.level == "OK"
 
@@ -732,7 +732,7 @@ def test_camera_move_vs_driver_turning():
     d = CameraMoveDetector()
     d.set_reference(_scene(1), "face", face)
     moved = [d.update(i / 10, _scene(2), "side", (420, 80, 520, 200)) for i in range(60)]
-    assert any(moved) and moved.index(True) >= 30  # ~3 s, not instantly
+    assert any(moved) and 5 <= moved.index(True) <= 20  # within 0.5-2 s: fast, but not on a single frame
     # scenery/lighting changes but the driver sits exactly where they were: NOT a move
     d = CameraMoveDetector()
     d.set_reference(_scene(1), "face", face)
@@ -756,3 +756,19 @@ def test_zoomed_face_maps_back_to_the_frame():
     x, y = obs.landmarks[0, :2]
     # centre of the crop (head box widened by 40%, clipped at the image edge) in frame coordinates
     assert 40 <= x <= 100 and 150 <= y <= 210
+
+
+def test_not_true_drops_risk_and_pauses_the_alert():
+    """Driver taps 'Not true' on a drowsiness alert: score drops at once and the alert pauses."""
+    from dms.fusion.alerts import AlertManager
+    from dms.fusion.risk import RiskFusion, RiskInputs
+
+    rf, am = RiskFusion(), AlertManager()
+    for i in range(100):
+        out = rf.update(i / 10, RiskInputs(perclos=0.3))
+    assert out.drowsiness > 0.6
+    rf.driver_dismissed()
+    am.mute("drowsy", 10.0)
+    out = rf.update(10.1, RiskInputs())
+    assert out.index < 30 and out.level == "OK"
+    assert am._fire("drowsy", 60.0) is None and am._fire("drowsy", 200.0) is not None  # paused 3 min

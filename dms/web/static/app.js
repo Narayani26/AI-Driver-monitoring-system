@@ -307,15 +307,14 @@ function onAlert(a) {
   const li = document.createElement("li");
   li.className = a.severity;
   li.innerHTML = `<span class="t">${fmtTime(a.t)}</span><div class="m">${esc(a.message)}${a.detail ? ` <span class="muted">(${esc(a.detail)})</span>` : ""}</div><div class="g">💡 ${esc(a.suggestion)}</div>`;
-  if (S.features && S.features.rating && SEV[a.severity] >= 1) {
-    // driver feedback: counts false alarms, and (if sharing is on) labels training data
+  if (S.features && RATEABLE_UI.has(a.kind)) {
+    // driver feedback: "not true" acts at once (risk drops, alert pauses); both answers are counted,
+    // and with data sharing on they label the 30 s of measurements for retraining
     const fb = document.createElement("div");
     fb.className = "fb";
-    fb.innerHTML = '<span class="muted small">Was this right?</span> <button class="btn tiny" data-v="correct">✓ yes</button> <button class="btn tiny" data-v="false_alarm">✗ no</button>';
-    fb.querySelectorAll("button").forEach((b) => (b.onclick = () => {
-      send({ type: "feedback", t: a.t, kind: a.kind, verdict: b.dataset.v });
-      fb.innerHTML = `<span class="muted small">${b.dataset.v === "correct" ? "Thanks: marked right" : "Thanks: marked as a false alarm"}</span>`;
-    }));
+    fb.innerHTML = '<span class="fb-q">Was this right?</span><button class="fb-btn ok" data-v="correct">✓ Correct</button><button class="fb-btn no" data-v="false_alarm">✗ Not true</button>';
+    a.fbEl = fb;
+    fb.querySelectorAll("button").forEach((b) => (b.onclick = () => rate(a, b.dataset.v)));
     li.appendChild(fb);
   }
   ul.prepend(li);
@@ -326,13 +325,25 @@ function onAlert(a) {
   if ($("opt-voice").checked && SEV[a.severity] >= 2) speak(a); // cautions and notices: tone + message only, no voice
 }
 let toastTimer = null;
+const RATEABLE_UI = new Set(["drowsy", "microsleep", "yawning", "head_nod", "eyes_off_road", "glances", "phone", "smoking", "drinking", "stress", "snoring", "shouting"]);
+function rate(a, verdict) {
+  // one rating per alert: from the pop-up or from the list
+  if (a.rated) return;
+  a.rated = verdict;
+  send({ type: "feedback", t: a.t, kind: a.kind, verdict });
+  if (a.fbEl) a.fbEl.innerHTML = `<span class="rated ${verdict === "correct" ? "ok" : "no"}">${verdict === "correct" ? "✓ marked correct" : "✗ marked as false alarm · risk lowered, alert paused 3 min"}</span>`;
+}
 function toast(a) {
   const t = $("toast");
   t.className = "toast " + a.severity;
   t.querySelector(".toast-title").textContent = a.message;
   t.querySelector(".toast-sub").textContent = a.suggestion;
+  const no = $("toast-no");
+  const canRate = S.features && S.features.rating !== undefined && RATEABLE_UI.has(a.kind);
+  no.classList.toggle("hidden", !canRate);
+  no.onclick = () => { rate(a, "false_alarm"); t.classList.add("hidden"); };
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add("hidden"), a.severity === "critical" ? 6000 : 4500);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), a.severity === "critical" ? 7000 : 5500);
 }
 function ensureAudio() {
   if (!S.audio) { try { S.audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { S.audio = null; } }
@@ -455,12 +466,17 @@ function showReport(m) {
       <div><h3>Alerts by type</h3><table>${kinds}</table></div>
       <div><h3>Emotions</h3><p>${emos}</p><h3>Unsafe behaviour</h3><p>${Object.entries(s.behaviour_time_s).map(([k, v]) => `${k}: ${v}s`).join(" · ") || "none detected"}</p></div>
     </div>
-    ${S.features && S.features.rating ? `<div class="kss-row">How sleepy did you feel? <select id="kss-select"><option value="">choose</option>
-      ${["1 extremely alert", "2", "3 alert", "4", "5 neither", "6", "7 sleepy, no effort to stay awake", "8", "9 fighting sleep"]
-        .map((x, i) => `<option value="${i + 1}">${x}</option>`).join("")}</select> <span class="muted small" id="kss-done"></span></div>` : ""}
+    ${S.features && S.features.rating ? `<div class="kss">
+      <div class="kss-q">How sleepy did you feel during this trip? <span class="muted small">(Karolinska Sleepiness Scale)</span></div>
+      <div class="kss-scale">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => `<button class="kss-b k${i}" data-k="${i}">${i}</button>`).join("")}</div>
+      <div class="kss-labels"><span>very alert</span><span>alert</span><span>neither</span><span>sleepy</span><span>fighting sleep</span></div>
+      <div class="kss-done muted small" id="kss-done"></div></div>` : ""}
     <h3>Risk over the whole session</h3>`;
-  const kss = $("kss-select");
-  if (kss) kss.onchange = () => { if (kss.value) { send({ type: "kss", value: Number(kss.value) }); $("kss-done").textContent = "saved, thank you"; } };
+  document.querySelectorAll(".kss-b").forEach((b) => (b.onclick = () => {
+    document.querySelectorAll(".kss-b").forEach((x) => x.classList.toggle("sel", x === b));
+    send({ type: "kss", value: Number(b.dataset.k) });
+    $("kss-done").textContent = `Saved: ${b.dataset.k}/9. Thank you, this teaches the system what sleepy really looks like for you.`;
+  }));
   $("report").classList.remove("hidden");
   const hist = m.timeline.map((p) => ({ t: p.t, risk: p.risk, d: p.drowsiness * 100, x: p.distraction * 100, a: p.affect * 100 }));
   requestAnimationFrame(() => drawChart($("report-chart"), hist, 0));

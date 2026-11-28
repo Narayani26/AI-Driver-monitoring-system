@@ -79,12 +79,12 @@ class RiskFusion:
     def __init__(self, w_drowsy: float = 1.0, w_distract: float = 1.0, affect_gain: float = 0.3, tau: float = 1.0, affect_tau: float = 5.0):
         self.w_drowsy, self.w_distract, self.affect_gain = w_drowsy, w_distract, affect_gain
         self._ema_drowsy = _EMA(tau * 3)  # drowsiness evolves slowly
-        self._ema_distract = _EMA(tau * 0.5)  # distraction must react fast
+        self._ema_distract = _EMA(tau * 0.8)  # distraction reacts fast, but one glance doesn't spike it
         self._ema_affect = _EMA(affect_tau)
         self._ema_cabin = _EMA(tau)
         self._ema_phone = _EMA(tau * 0.7)
         self._last_microsleep: float | None = None
-        self.post_microsleep_floor, self.post_microsleep_tau = 0.65, 45.0
+        self.post_microsleep_floor, self.post_microsleep_tau = 0.55, 20.0  # decays within ~half a minute once alert again
         self.learned_cap = 0.45  # max drowsiness from learned models without measured signs
         self.cabin_cap = 0.5  # max distraction from the State Farm behaviour CNN without a detected object
         self.level_idx = 0
@@ -136,7 +136,7 @@ class RiskFusion:
         return s
 
     def _distraction(self, t: float, r: RiskInputs, reasons: list[str]) -> float:
-        s = _ramp(r.off_road_duration, 1.0, 3.0) * 0.8
+        s = _ramp(r.off_road_duration, 1.5, 3.0) * 0.8  # mirror/dashboard glances (< 1.5 s) don't count
         if r.long_distraction:
             s = 1.0
         elif r.vats_distraction:
@@ -215,6 +215,15 @@ class RiskFusion:
 
         self.level_idx = self._hysteresis(index)
         return RiskOutput(index=index, level=LEVELS[self.level_idx], drowsiness=d, distraction=x, affect=a, reasons=reasons)
+
+    def driver_dismissed(self):
+        """The driver marked an alert as wrong: drop the accumulated evidence right away instead of
+        letting it decay over tens of seconds (a false alarm must not keep the score high)."""
+        self._last_microsleep = None
+        for ema in (self._ema_drowsy, self._ema_distract, self._ema_cabin, self._ema_phone):
+            if ema.v is not None:
+                ema.v = 0.0
+        self.level_idx = 0
 
     def _hysteresis(self, index: float) -> int:
         lvl = self.level_idx

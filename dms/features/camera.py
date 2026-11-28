@@ -59,7 +59,7 @@ def ncc(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
 
 
 class CameraMoveDetector:
-    def __init__(self, hold_s: float = 3.0, min_ncc: float = 0.6, max_shift: float = 0.25, size_ratio: float = 1.4, period_s: float = 0.25):
+    def __init__(self, hold_s: float = 1.5, min_ncc: float = 0.6, max_shift: float = 0.25, size_ratio: float = 1.4, period_s: float = 0.25):
         self.hold_s, self.min_ncc, self.max_shift, self.size_ratio, self.period_s = hold_s, min_ncc, max_shift, size_ratio, period_s
         self.reset()
 
@@ -111,7 +111,9 @@ class CameraMoveDetector:
             driver_changed = shifted or rescaled
         if scene_changed and driver_changed:
             self._since = t if self._since is None else self._since
-            if t - self._since >= self.hold_s:
+            # a completely different picture AND a different view: decide twice as fast
+            hold = self.hold_s / 2 if (self.last_ncc < 0.3 and mode != ref_mode) else self.hold_s
+            if t - self._since >= hold:
                 self._ref, self._since = None, None  # wait for the new calibration to set a new reference
                 return True
         else:

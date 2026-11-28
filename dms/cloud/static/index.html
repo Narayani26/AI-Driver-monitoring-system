@@ -8,14 +8,21 @@
 </head>
 <body>
 <header>
-  <div class="brand">● Driver Monitoring <span class="muted">cloud</span></div>
-  <div id="who" class="muted"></div>
+  <div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg></span>
+    Driver Monitoring <span class="brand-sub">Cloud</span></div>
+  <div id="who" class="who"></div>
   <button id="logout" class="btn hidden">Log out</button>
 </header>
 
 <main>
   <!-- login / register -->
-  <section id="auth" class="card narrow">
+  <section id="auth" class="auth">
+   <div class="auth-intro">
+    <h1>Safer drives, one trip at a time.</h1>
+    <p>Your car app detects drowsiness, distraction and phone use on the device. Here you see your trips, rate alerts and choose to help the models improve. No video ever leaves the car.</p>
+    <ul class="ticks"><li>Trip safety scores and alert history</li><li>Mark false alarms with one tap</li><li>Opt-in, revocable data sharing</li></ul>
+   </div>
+   <div class="card auth-card">
     <h2 id="auth-title">Log in</h2>
     <form id="auth-form">
       <label id="name-row" class="hidden">Name <input id="f-name" autocomplete="name" maxlength="120"></label>
@@ -25,9 +32,11 @@
       <p class="err" id="auth-err"></p>
     </form>
     <p class="muted">No account? <a href="#" id="toggle-auth">Create one</a></p>
+   </div>
   </section>
 
   <section id="app" class="hidden">
+    <div class="hello"><h1 id="hello">Your driving</h1><p class="muted">Trips and alerts uploaded from your dash cam, phone or laptop.</p></div>
     <div class="grid">
       <div class="card">
         <h3>Overview</h3>
