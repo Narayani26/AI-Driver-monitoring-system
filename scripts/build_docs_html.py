@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
+import report_extra as X
 import submission_content as C
 
 A = Path("docs/report_assets").resolve()
@@ -91,7 +92,15 @@ def FIG(path, cap, width="100%"):
     return f'<figure><img src="{img(path)}" style="width:{width}"><figcaption>Fig. {len(figs)}. {e(cap)}</figcaption></figure>'
 
 
-ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII"]
+def _roman(n):
+    out = ""
+    for v, r in [(50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]:
+        while n >= v:
+            out += r; n -= v
+    return out
+
+
+ROMAN = [_roman(i) for i in range(1, 90)]
 
 
 def TAB(cap, headers, rows):
@@ -141,8 +150,9 @@ def body() -> str:
           H2("1.4", "Organisation of the Report"),
           P("Chapter 2 reviews related work. Chapter 3 states the problem and requirements and Chapter 4 the technology stack. Chapter 5 "
             "describes the architecture and database, Chapter 6 the datasets and models and Chapter 7 the implementation. Chapter 8 shows the "
-            "user interface, Chapters 9 and 10 the testing and results, Chapter 11 the challenges, and Chapter 12 concludes.")]
+            "user interface, Chapters 9 and 10 the testing and results, Chapter 11 deployment and the user manual, Chapter 12 the challenges, and Chapter 13 concludes.")]
 
+    s += X.ch1(H2, P, UL, FIG, TAB, A)
     s += [H1("2", "Related Work"), H2("2.1", "Eye-Based Drowsiness Measures"),
           P("Soukupov&aacute; and &Ccaron;ech introduced the Eye Aspect Ratio (EAR), the ratio of vertical to horizontal eye-landmark "
             "distances, which falls towards zero as the eye closes [1]. PERCLOS, the percentage of time the eyes are at least 80% closed, is "
@@ -172,6 +182,7 @@ def body() -> str:
                ["Temporal deep models", "Use time context", "Need much data", "Hybrid model with statistics branch"],
                ["Commercial infrared DMS", "Robust, works at night", "Fixed hardware, factory-fitted", "Any camera, view-adaptive"]])]
 
+    s += X.ch2(H2, P, UL, FIG, TAB, A)
     s += [H1("3", "Problem Statement and Requirements"), H2("3.1", "Problem Definition"),
           P("Design and evaluate a real-time system that, from an ordinary camera and optionally a microphone, detects driver drowsiness, "
             "distraction and unsafe behaviour for any driver and camera position, alerts proportionately with few false alarms, keeps video on "
@@ -199,6 +210,7 @@ def body() -> str:
               "Optional: Android phone with an IP-camera app or a Wi-Fi dash cam; an NVIDIA GPU only for training (Kaggle T4).",
               "Python 3.12, Chrome, optional Docker, and a PostgreSQL database (Supabase) for the cloud part."])]
 
+    s += X.ch3(H2, P, UL, FIG, TAB, A)
     s += [H1("4", "Technology Stack"),
           TAB("Technology stack", ["Layer", "Technologies"], C.TECH),
           P("Python was chosen for its machine-learning ecosystem; FastAPI for asynchronous HTTP and WebSocket handling; MediaPipe and "
@@ -206,6 +218,7 @@ def body() -> str:
             "emotion model. The browser front end needs no installation and uses the device camera, microphone and speech synthesis "
             "directly. SQLAlchemy lets the same back end run on SQLite during development and on PostgreSQL (Supabase) in production.")]
 
+    s += X.ch4(H2, P, UL, FIG, TAB, A)
     s += [H1("5", "System Architecture and Design"), H2("5.1", "Overall Architecture"),
           P("The in-car application is offline-first. Camera frames are analysed by the perception models; geometric indicators and "
             "temporal trackers estimate the driver state; risk fusion and the alert manager decide what to tell the driver. Events and trip "
@@ -235,6 +248,7 @@ def body() -> str:
           P("No column holds images, video or audio. Row Level Security is enabled on every table with no public policies, so Supabase's "
             "public API can read nothing; only the back end, connected as the owner over TLS, reads and writes.")]
 
+    s += X.ch5(H2, P, UL, FIG, TAB, A)
     s += [H1("6", "Datasets and Deep-Learning Models"), H2("6.1", "Datasets"),
           TAB("Datasets used", ["Dataset", "Size used", "Task", "Split"], C.DATASETS),
           P("All splits are subject-independent: images or videos of one person are never in both training and test sets, and an assertion "
@@ -258,6 +272,7 @@ def body() -> str:
               "Temporal models: 5-fold GroupKFold by person, 40 epochs, dropout 0.3; a Random Forest on engineered features as baseline.",
               "The best model per task is deployed, not the largest: fast face network live, best frame-drowsiness network, hybrid binary temporal network."])]
 
+    s += X.ch6(H2, P, UL, FIG, TAB, A)
     s += [H1("7", "Implementation"), H2("7.1", "Geometric Indicators"),
           P("For the six landmarks p1-p6 around an eye:"),
           '<div class="formula">EAR = ( |p2 &minus; p6| + |p3 &minus; p5| ) / ( 2 |p1 &minus; p4| ),&nbsp;&nbsp; openness = ( EAR &minus; 0.3 EAR<sub>open</sub> ) / ( 0.7 EAR<sub>open</sub> )</div>',
@@ -305,6 +320,7 @@ def body() -> str:
                ["Devices", "Per-device random key, only its hash stored, revocable"], ["Database", "Supabase PostgreSQL, Row Level Security, TLS"],
                ["Consent", "Opt-in; withdrawal deletes shared data; account erasure; pseudonymised exports"]])]
 
+    s += X.ch7(H2, P, UL, FIG, TAB, A)
     s += [H1("8", "User Interface"),
           P("The in-car interface shows the camera and the AI view side by side, the risk gauge with its reasons, the driver-state cards and a "
             "live timeline. Alerts appear as a banner with a suggestion, a voice message and a buzzer tone, and can be rejected with one tap. "
@@ -317,6 +333,7 @@ def body() -> str:
           FIG(A / "cloud_dashboard.png", "Cloud dashboard: KPIs, devices, safety-score trend, alerts by type and trips (sample data)", width="70%"),
           FIG(A / "cloud_admin.png", "Administrator view: training-data quality, false alarms and the model registry (sample data)", width="70%")]
 
+    s += X.ch8(H2, P, UL, FIG, TAB, A)
     s += [H1("9", "Testing and Quality Assurance"), H2("9.1", "Automated Tests"),
           P("The repository contains 60 automated tests (pytest) covering feature extraction, calibration, PERCLOS, microsleep, yawns, glance "
             "rules, risk fusion and hysteresis, alert cooldowns and muting, audio rules, mishap escalation, camera-move detection, zoom search, "
@@ -337,6 +354,7 @@ def body() -> str:
           P("End-to-end processing takes 12-16 ms per frame on a laptop CPU (about 30 frames per second), measured in the browser and in the "
             "server's per-model timing log.")]
 
+    s += X.ch9(H2, P, UL, FIG, TAB, A)
     s += [H1("10", "Results and Evaluation"), H2("10.1", "Headline Results"),
           TAB("Results on data never seen in training", ["Task", "Test data", "Result", "Notes"], C.RESULTS),
           FIG(A / "results_accuracy.png", "Accuracy per task on unseen data", width="92%"),
@@ -357,19 +375,21 @@ def body() -> str:
             "80-87% for alert versus drowsy. Emotion from a single image transfers poorly between datasets (48% on AffectNet+), so emotion only "
             "modifies the risk score. The false-alarm rate on real drives is now measurable through driver feedback.")]
 
-    s += [H1("11", "Challenges and Solutions"),
+    s += X.ch10(H2, P, UL, FIG, TAB, A)
+    s += X.ch11_deploy(H1, H2, P, UL, FIG, TAB, A)
+    s += [H1("12", "Challenges and Solutions"),
           TAB("Challenges encountered and how they were solved", ["Challenge", "Solution", "Outcome"], C.CHALLENGES)]
 
-    s += [H1("12", "Conclusion and Future Scope"), H2("12.1", "Conclusion"),
+    s += [H1("13", "Conclusion and Future Scope"), H2("13.1", "Conclusion"),
           P("We built and evaluated a complete driver monitoring system that runs in real time on ordinary hardware, adapts to each driver and "
             "to arbitrary camera placement, explains its alerts, limits false alarms, keeps video on the device and improves from consented "
             "driver feedback through a safe retraining pipeline. Subject-independent evaluation shows strong per-frame accuracy (98% eye state, "
             "92% behaviour on new drivers) and 80-87% for drowsiness over time, and quantifies identity leakage and the value of per-driver "
             "calibration."),
-          H2("12.2", "Limitations"),
+          H2("13.2", "Limitations"),
           UL(["Ordinary cameras cannot see the eyes at night; an infrared camera is needed.", "Dark sunglasses hide the eyes (head nodding and attention still work).",
               "Audio cannot attribute snoring to a person.", "The false-alarm rate per hour on real drives still has to be measured."]),
-          H2("12.3", "Future Scope"),
+          H2("13.3", "Future Scope"),
           UL(["Infrared camera support for night driving.", "Native Android application running when the phone is locked; the cloud API is ready.",
               "Vehicle data (speed, steering) via OBD-II to pause alerts when parked and to strengthen drowsiness estimates.",
               "On-device quantisation (INT8) for low-cost dash-cam processors.", "A larger real-drive dataset through the feedback loop and scheduled retraining."])]
@@ -389,6 +409,7 @@ def body() -> str:
           P("<b>Cloud back end:</b> <code>set -a; source .env; set +a; python -m dms.cloud.app</code>"),
           P(f"<b>Source code:</b> {C.REPO}")]
     CH.append(("", "Appendix A: Project Structure and How to Run", []))
+    s += X.appendices(TAB, P, CH)
     return "\n".join(s)
 
 
@@ -454,7 +475,11 @@ def doc(inner, css):
     return f"<!doctype html><html><head><meta charset='utf-8'><style>{css}</style></head><body>{inner}</body></html>"
 
 
+FRONT_PAGES = ["ii", "iii", "iv", "vii", "viii", "ix"]
+
+
 def build_report():
+    """Returns True when the front-matter page numbers printed in the contents were right."""
     figs.clear(); tabs.clear(); CH.clear()
     main_html = body()
     hdr = (f"<div style='width:100%;font-family:Times New Roman,serif;font-size:8.5pt;font-style:italic;text-align:right;"
@@ -480,7 +505,7 @@ def build_report():
         return f"<tr class='{cls}'><td style='width:22mm'>{no}</td><td class='ti'><div class='dots'><span>{e(title)}</span><span class='f'></span></div></td><td class='pg'>{page}</td></tr>"
 
     front = ["DECLARATION", "ACKNOWLEDGEMENT", "ABSTRACT", "LIST OF TABLES", "LIST OF FIGURES", "LIST OF SYMBOLS"]
-    front_pages = dict(zip(front, ["ii", "iii", "iv", "vii", "viii", "ix"]))
+    front_pages = dict(zip(front, FRONT_PAGES))
     toc = "<table class='toc'><tr><th>CHAPTER NO.</th><th>TITLE</th><th style='text-align:right'>PAGE NO.</th></tr>"
     toc += "".join(row("", f, front_pages[f], "ch") for f in front)
     for num, title, subs in CH:
@@ -541,30 +566,30 @@ def build_report():
     def sec_title(t):
         return f"<div class='center' style='font-size:14pt;font-weight:bold;margin:2mm 0 6mm'>{t}</div>"
 
-    fronts = [("title", title_pg, None), ("cert", cert, "i"), ("decl", decl, "ii"), ("ack", ack, "iii"), ("abs", abstract, "iv"),
-              ("toc", sec_title("TABLE OF CONTENTS") + toc, "v"), ("lot", sec_title("LIST OF TABLES") + lot, "vii"),
-              ("lof", sec_title("LIST OF FIGURES") + lof, "viii"), ("los", sec_title("LIST OF SYMBOLS") + los, "ix")]
-    parts = []
-    for key, inner, num in fronts:
+    fronts = [("title", title_pg, False), ("cert", cert, True), ("decl", decl, True), ("ack", ack, True), ("abs", abstract, True),
+              ("toc", sec_title("TABLE OF CONTENTS") + toc, True), ("lot", sec_title("LIST OF TABLES") + lot, True),
+              ("lof", sec_title("LIST OF FIGURES") + lof, True), ("los", sec_title("LIST OF SYMBOLS") + los, True)]
+    parts, pno, starts = [], 1, {}
+
+    def foot_of(n):
+        return f"<div style='width:100%;text-align:center;font-family:Times New Roman,serif;font-size:10pt'>{_roman(n).lower()}</div>"
+
+    for key, inner, numbered in fronts:
         f = OUT / f"_f_{key}.pdf"
-        foot = None if num is None else f"<div style='width:100%;text-align:center;font-family:Times New Roman,serif;font-size:10pt'>{num}</div>"
-        if key == "toc":  # contents runs over two pages: number them v, vi
-            foot = "<div style='width:100%;text-align:center;font-family:Times New Roman,serif;font-size:10pt'><span class='pageNumber'></span></div>"
-            render(doc(inner, REPORT_CSS.replace("@page {", "@page { ") + "@page { } body{counter-reset:none}"), f, foot)
-            # pageNumber restarts at 1 in this separate render: replace with roman by re-rendering with explicit footers per page
-            n = int(re.search(r"Pages:\s+(\d+)", subprocess.run(["pdfinfo", str(f)], capture_output=True, text=True).stdout).group(1))
-            romans = ["v", "vi", "vii"][:n]
-            pieces = []
-            for k in range(n):
-                pf = OUT / f"_f_toc_{k}.pdf"
-                render(doc(inner, REPORT_CSS), pf, f"<div style='width:100%;text-align:center;font-family:Times New Roman,serif;font-size:10pt'>{romans[k]}</div>")
-                one = OUT / f"_f_toc_only_{k}.pdf"
-                subprocess.run(["pdfseparate", "-f", str(k + 1), "-l", str(k + 1), str(pf), str(one)], check=True)
-                pieces.append(one)
-            parts += pieces
+        starts[key] = _roman(pno).lower()
+        render(doc(inner, REPORT_CSS), f, foot_of(pno) if numbered else None)
+        n = int(re.search(r"Pages:\s+(\d+)", subprocess.run(["pdfinfo", str(f)], capture_output=True, text=True).stdout).group(1))
+        if not numbered or n == 1:
+            parts.append(f)
+            pno += numbered
             continue
-        render(doc(inner, REPORT_CSS), f, foot)
-        parts.append(f)
+        for k in range(n):  # multi-page section: one render per page with its own roman number
+            pf = OUT / f"_f_{key}_{k}.pdf"
+            render(doc(inner, REPORT_CSS), pf, foot_of(pno))
+            one = OUT / f"_f_{key}_only_{k}.pdf"
+            subprocess.run(["pdfseparate", "-f", str(k + 1), "-l", str(k + 1), str(pf), str(one)], check=True)
+            parts.append(one)
+            pno += 1
     combined = "".join(f"<div class='page'>{inner}</div>" for _, inner, _ in fronts) + main_html
     to_docx(doc(combined, REPORT_CSS), "DMS_Project_Report")
     final = OUT / "DMS_Project_Report.pdf"
@@ -572,6 +597,11 @@ def build_report():
     for p in OUT.glob("_*.pdf"):
         p.unlink()
     print("saved", final)
+    actual = [starts[k] for k in ("decl", "ack", "abs", "lot", "lof", "los")]
+    if actual != FRONT_PAGES:
+        FRONT_PAGES[:] = actual
+        return False
+    return True
 
 
 # ============================================================== IEEE paper
@@ -740,5 +770,8 @@ if __name__ == "__main__":
     import sys
 
     if "--paper" not in sys.argv:
-        build_report()
-    build_paper()
+        for _ in range(3):
+            if build_report():
+                break
+    if "--report" not in sys.argv:
+        build_paper()
