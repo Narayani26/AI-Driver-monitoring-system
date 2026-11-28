@@ -260,7 +260,7 @@ class YawnTracker:
     it's much less sensitive to talking than raw MAR.
     """
 
-    def __init__(self, mar_thresh: float = 0.6, jaw_thresh: float = 0.5, min_s: float = 1.5, window_s: float = 300.0):
+    def __init__(self, mar_thresh: float = 0.55, jaw_thresh: float = 0.45, min_s: float = 1.5, window_s: float = 300.0):
         self.mar_thresh = mar_thresh
         self.jaw_thresh = jaw_thresh
         self.min_s = min_s
@@ -274,12 +274,12 @@ class YawnTracker:
         self._open_since = None
 
     def update(self, t: float, mar: float, jaw_open: float) -> bool:
-        if not np.isnan(jaw_open):
-            is_open = jaw_open > self.jaw_thresh
-        elif not np.isnan(mar):
-            is_open = mar > self.mar_thresh
-        else:
+        # either measure: the jaw blendshape is precise up close, the mouth ratio (scale-free) holds up
+        # better when the face is small/far away
+        jaw_ok, mar_ok = not np.isnan(jaw_open), not np.isnan(mar)
+        if not (jaw_ok or mar_ok):
             return False
+        is_open = (jaw_ok and jaw_open > self.jaw_thresh) or (mar_ok and mar > self.mar_thresh)
         new_yawn = False
         if is_open:
             if self._open_since is None:

@@ -311,6 +311,7 @@ class DriverMonitor:
         self.yawn = YawnTracker(min_s=p["yawn_min_s"])
         self.glance = GlanceTracker(long_s=p["long_s"], vats_cum_s=p["vats_cum_s"])
         self.nod = HeadNodTracker(min_s=max(p["microsleep_s"] + 0.5, 1.2))
+        self.nod_face = HeadNodTracker(delta=20.0, min_s=max(p["microsleep_s"] + 0.5, 1.2))  # degrees, frontal camera
         self.alerter = AlertManager(cooldowns={k: v * p["cooldown_scale"] for k, v in COOLDOWN_S.items()},
                                     drowsy_threshold=p["drowsy_threshold"])
 
@@ -467,7 +468,15 @@ class DriverMonitor:
         """Is the face close enough to the calibrated pose for eye/mouth shape to be trusted?"""
         if np.isnan(f.pitch) or np.isnan(f.yaw):
             return True
-        return abs(f.pitch - prof.pitch0) <= self.cfg.eye_max_pitch and abs(f.yaw - prof.yaw0) <= self.cfg.eye_max_yaw
+        dp, dy = f.pitch - prof.pitch0, f.yaw - prof.yaw0
+        if abs(dy) > self.cfg.eye_max_yaw:
+            return False
+        if abs(dp) <= self.cfg.eye_max_pitch:
+            return True
+        # Head dropped FORWARD (positive pitch = looking down) with the eyelids closed is how people doze
+        # off: keep judging the eyes then. Only a head tilted BACK (open eyes look closed from a low
+        # camera) is excluded. The eyelid blendshape must agree, so looking down at a phone doesn't count.
+        return dp > 0 and dp <= 45 and not np.isnan(f.blink_bs) and f.blink_bs > 0.55
 
     def _timed(self, name: str, fn):
         t0 = time.perf_counter()
@@ -552,7 +561,15 @@ class DriverMonitor:
         if obs is None:
             obs = self._zoom_search(frame, t)
         else:
-            self._last_face = (t, bbox_from_points(obs.landmarks, frame.shape, 0.1))
+            box = bbox_from_points(obs.landmarks, frame.shape, 0.1)
+            self._last_face = (t, box)
+            if box[2] - box[0] < 0.18 * frame.shape[1]:
+                # face far from the camera: re-measure it in an enlarged crop for sharper eye/mouth shapes
+                if getattr(self, "_zoom_lm", None) is None:
+                    self._zoom_lm = FaceLandmarker(video_mode=False, min_conf=0.3)
+                z = self._timed("face landmarks (zoomed)", lambda: detect_zoomed(self._zoom_lm, frame, box))
+                if z is not None:
+                    obs = z
         feats = compute_features(obs.landmarks, obs.transform, obs.blendshapes) if obs else FrameFeatures(face=False)
         face_box = bbox_from_points(obs.landmarks, frame.shape, 0.1) if obs else None
         jolt = self.jolt.update(t, frame) if self.mishap is not None else False
@@ -646,7 +663,12 @@ class DriverMonitor:
             self.nod.update(t, res.head_drop)
         else:
             self.nod.pause()
-        res.nodding, res.nods = self.nod.nodding, self.nod.count()
+        # frontal camera: head dropped forward >= 20 deg with the eyelids (blendshape) closing = nodding off
+        if feats.face and not np.isnan(feats.pitch) and not np.isnan(feats.blink_bs) and feats.blink_bs > 0.5:
+            self.nod_face.update(t, feats.pitch - prof.pitch0)
+        else:
+            self.nod_face.pause()
+        res.nodding, res.nods = self.nod.nodding or self.nod_face.nodding, self.nod.count() + self.nod_face.count()
         if feats.face:
             self.seq.update(t, feats.vector(), prof)
         self.window.update(t, feats, frontal, obs, frame.shape[1])

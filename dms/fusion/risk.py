@@ -85,7 +85,7 @@ class RiskFusion:
         self._ema_phone = _EMA(tau * 0.7)
         self._last_microsleep: float | None = None
         self.post_microsleep_floor, self.post_microsleep_tau = 0.55, 20.0  # decays within ~half a minute once alert again
-        self.learned_cap = 0.45  # max drowsiness from learned models without measured signs
+        self.learned_cap = 0.28  # learned models alone stay in the green (below CAUTION at 30)
         self.cabin_cap = 0.5  # max distraction from the State Farm behaviour CNN without a detected object
         self.level_idx = 0
 

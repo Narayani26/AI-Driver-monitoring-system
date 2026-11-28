@@ -606,7 +606,7 @@ def test_hybrid_temporal_model_and_binary(tmp_path):
 
 def test_risk_accepts_binary_temporal_model():
     out = RiskFusion().update(0.0, RiskInputs(alertness_probs=np.array([0.1, 0.9])))
-    assert out.drowsiness > 0.4 and any("drowsy" in r for r in out.reasons)
+    assert 0.2 < out.drowsiness < 0.3 and any("drowsy" in r for r in out.reasons)  # alone: shown, but stays green
 
 
 def test_learned_drowsiness_alone_is_only_a_caution():
