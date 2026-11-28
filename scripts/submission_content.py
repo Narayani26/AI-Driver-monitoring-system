@@ -1,7 +1,7 @@
 """Shared facts for the report, paper and slides: one place, so all three say the same thing."""
 
 TITLE = "AI-Based Driver Monitoring System for Real-Time Detection of Drowsiness and Unsafe Behaviour"
-STUDENTS = [("Purva Manoj Jadhav", "B09", "2324000121"), ("Narayani Ghorpade", "C18", "2324000414")]
+STUDENTS = [("Purva Manoj Jadhav", "B09", "2324000121"), ("Narayani Prithviraj Ghorpade", "C18", "2324000414")]
 GUIDE = "Dr. Abhinandan P. Shirahatti"
 HOD = "Dr. Lingaraj A. Hadimani"
 COLLEGE = "KOLHAPUR INSTITUTE OF TECHNOLOGY'S COLLEGE OF ENGINEERING KOLHAPUR (EMPOWERED AUTONOMOUS)"

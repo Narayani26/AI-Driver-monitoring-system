@@ -418,6 +418,26 @@ const {{ chromium }} = require('playwright');
     subprocess.run(["node", str(jsf)], check=True)
 
 
+def to_docx(html_doc: str, name: str):
+    """Editable Word version of the same document (LibreOffice: HTML -> DOCX)."""
+    d = Path(tempfile.mkdtemp())
+    src = d / f"{name}.html"
+    # Word has no CSS columns/@page: give it plain flow with page breaks and a fixed image width
+    # Word-friendly flow: tighter line spacing so each front-matter page fits one page, smaller margins inside blocks
+    fix = ("<style>body{line-height:1.35 !important} p{line-height:1.5 !important} div{line-height:1.35}"
+           " .cols{column-count:1} figure img{max-width:15cm}</style></head>")
+    html_doc = re.sub(r"""<img src=(['"])(data:[^'"]+)\1 style=(['"])width:(\d+)%\3>""",
+                      lambda m: f'<img src="{m.group(2)}" width="{int(6.0 * int(m.group(4)))}">', html_doc)
+    html_doc = html_doc.replace("<div class='page'>", "<p style='page-break-before: always; margin:0'></p><div>")
+    html_doc = html_doc.replace('<h1 id=', "<p style='page-break-before: always; margin:0'></p><h1 id=")
+    src.write_text(html_doc.replace("</head>", fix, 1).replace("margin-top:28mm", "margin-top:10mm").replace("margin-top:20mm", "margin-top:8mm")
+                   .replace("margin-top:14mm", "margin-top:6mm").replace("margin-top:12mm", "margin-top:6mm").replace("margin-top:10mm;", "margin-top:5mm;")
+                   .replace("line-height:2'", "line-height:1.6'"))
+    subprocess.run(["soffice", "--headless", "--infilter=HTML (StarWriter)", "--convert-to", "docx:MS Word 2007 XML",
+                    "--outdir", str(OUT), str(src)], check=True, capture_output=True, timeout=300)
+    print("saved", OUT / f"{name}.docx")
+
+
 def page_of(pdf: Path, needles: list[str]) -> dict[str, int]:
     out, n = {}, int(re.search(r"Pages:\s+(\d+)", subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True).stdout).group(1))
     for i in range(1, n + 1):
@@ -484,7 +504,7 @@ def build_report():
       <div style='font-size:15pt;font-weight:bold;margin-top:6mm'>BACHELOR OF TECHNOLOGY</div>
       <div style='font-size:12pt;font-weight:bold;margin-top:3mm'>IN</div>
       <div style='font-size:13pt;font-weight:bold;margin-top:3mm'>COMPUTER SCIENCE AND ENGINEERING</div>
-      <img src='{img(A / "kit_logo.png")}' style='width:62mm;margin-top:10mm'>
+      <img src='{img(A / "kit_logo.png")}' style='width:40%'>
       <div style='font-size:17pt;font-weight:bold;margin-top:8mm;line-height:1.6'>{college}</div>
       <div style='font-size:13pt;font-weight:bold;margin-top:8mm'>{MONTH}</div></div>"""
     head = f"<div class='center' style='font-size:17pt;font-weight:bold;line-height:1.5'>{college}</div>"
@@ -544,6 +564,8 @@ def build_report():
             continue
         render(doc(inner, REPORT_CSS), f, foot)
         parts.append(f)
+    combined = "".join(f"<div class='page'>{inner}</div>" for _, inner, _ in fronts) + main_html
+    to_docx(doc(combined, REPORT_CSS), "DMS_Project_Report")
     final = OUT / "DMS_Project_Report.pdf"
     subprocess.run(["pdfunite", *map(str, parts), str(main_pdf), str(final)], check=True)
     for p in OUT.glob("_*.pdf"):
@@ -705,6 +727,7 @@ creators of the public datasets and open-source software used in this work.</p>
 </div>"""
     out = OUT / "DMS_IEEE_Research_Paper.pdf"
     render(doc(inner, PAPER_CSS), out, None)
+    to_docx(doc(inner, PAPER_CSS), "DMS_IEEE_Research_Paper")
     print("saved", out)
 
 
