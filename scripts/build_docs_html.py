@@ -591,6 +591,9 @@ figure img { max-width: 100%; }
 figure.wide { column-span: all; }
 figcaption { font-size: 8pt; text-align: justify; margin-top: 3pt; }
 .tcap { font-size: 8pt; text-align: center; font-variant: small-caps; margin: 6pt 0 2pt; }
+.tbl { break-inside: avoid; page-break-inside: avoid; display: block; }
+h2, h3 { break-after: avoid; page-break-after: avoid; }
+.ref { break-inside: avoid; }
 table { border-collapse: collapse; width: 100%; font-size: 7.6pt; margin-bottom: 8pt; break-inside: avoid; line-height: 1.15; }
 th { border-top: 1pt solid #000; border-bottom: .6pt solid #000; padding: 2pt 3pt; text-align: left; }
 td { padding: 1.6pt 3pt; vertical-align: top; } tr:last-child td { border-bottom: 1pt solid #000; }
@@ -607,7 +610,7 @@ def build_paper():
     def table(cap, headers, rows):
         h = "".join(f"<th>{e(x)}</th>" for x in headers)
         b = "".join("<tr>" + "".join(f"<td>{e(str(v))}</td>" for v in r) + "</tr>" for r in rows)
-        return f"<div class='tcap'>{cap}</div><table><tr>{h}</tr>{b}</table>"
+        return f"<div class='tbl'><div class='tcap'>{cap}</div><table><tr>{h}</tr>{b}</table></div>"
 
     authors = "".join(f"<div><div class='n'>{e(n)}</div><i>Roll No. {r}</i><br><i>Dept. of Computer Science and Engineering<br>Kolhapur Institute of Technology's<br>College of Engineering (Empowered Autonomous)<br>Kolhapur &ndash; 416234, Maharashtra, India</i></div>" for n, r, _ in C.STUDENTS)
     authors += (f"<div><div class='n'>{e(C.GUIDE)}</div><i>Project Supervisor</i><br><i>Dept. of Computer Science and Engineering<br>Kolhapur Institute of Technology's<br>"
@@ -620,7 +623,7 @@ def build_paper():
     t4 = table("Table IV<br>Alert sensitivity presets", ["Setting", "Low", "Normal", "High"],
                [["Microsleep", "1.5 s", "1.0 s", "0.8 s"], ["Looking away", "4 s", "3 s", "2.5 s"], ["Glances in 30 s", "12 s", "10 s", "8 s"],
                 ["Drowsy threshold", "70%", "60%", "50%"]])
-    t5 = table("Table V<br>Challenges and solutions", ["Challenge", "Solution", "Outcome"], C.CHALLENGES[:7])
+    t5 = table("Table V<br>Challenges and solutions", ["Challenge", "Solution", "Outcome"], C.CHALLENGES[:5])
 
     inner = f"""
 <div class='title'>{e(C.TITLE)}</div>
@@ -693,21 +696,20 @@ used 5-fold GroupKFold by person on UTA-RLDD (178 videos, first 6 min at 10 Hz, 
 engineered features. A leakage assertion aborts training if any person appears in two splits.</p>
 <h2>VI. Results</h2>
 {t3}
-{fig(A / "results_accuracy.png", "Fig. 2. Accuracy per task on data never seen in training.")}
+{fig(A / "results_accuracy.png", "Fig. 2. Accuracy per task on data never seen in training.", width="92%")}
 <p><i>Per-frame tasks.</i> Eye state reaches 98.0% (ECE 0.006 after temperature scaling) and driver behaviour 92.1% on unseen drivers.</p>
 <p><i>Identity leakage.</i> Random splits overstate accuracy: 99.6% versus 92.1% on State Farm (17&times; more errors on new drivers, 41&times;
 with EfficientNet-B2) and 94&ndash;97% versus 61&ndash;67% on NTHU-DDD (Fig. 3).</p>
-{fig(A / "results_leakage.png", "Fig. 3. Identity leakage: random split versus unseen people.")}
+{fig(A / "results_leakage.png", "Fig. 3. Identity leakage: random split versus unseen people.", width="80%")}
 <p><i>Drowsiness over time.</i> Alert versus drowsy reaches 87.3% (Random Forest) and 80.5% (hybrid network) of videos of unseen people; three
 levels reach 64.7%, on par with the published baseline [3]. Removing per-driver calibration drops the hybrid model from 53.4% to 37.6%,
 close to chance (Fig. 4).</p>
-{fig(A / "results_temporal.png", "Fig. 4. Drowsiness over time on UTA-RLDD (60 people, 5-fold, unseen subjects).")}
+{fig(A / "results_temporal.png", "Fig. 4. Drowsiness over time on UTA-RLDD (60 people, 5-fold, unseen subjects).", width="88%")}
 <p><i>Audio and robustness.</i> Cabin sounds are detected with 95% (snoring), 93% (siren) and 78% (crash) recall with no false shouting alarms.
 On a side-mounted clip the face detector found 0/77 frames and the pose fallback 77/77; on a night wide-angle dash cam the zoom search raised
-face detection from 0% to 71% (Fig. 5). The full pipeline runs in 12&ndash;16 ms per frame.</p>
-{fig(ui("ui_night_monitoring.jpg"), "Fig. 5. Live interface on a night wide-angle dash cam: the zoom search finds the small, dark face; front view monitoring with risk 0 and the driver-state cards.", wide=True, width="88%")}
-{fig(ui("ui_camera_moved.jpg"), "Fig. 6. The camera is moved during the trip: the background and the view change together, so the position is re-learned.")}
-{fig(ui("ui_trip_report.jpg"), "Fig. 7. Trip report without video: safety score, KPIs, time per risk level, alerts and the driver's sleepiness rating.")}
+face detection from 0% to 71% (Fig. 5); when the camera is moved mid-trip, the new view is detected and the position re-learned. The full pipeline runs in 12&ndash;16 ms per frame.</p>
+{fig(ui("ui_night_monitoring.jpg"), "Fig. 5. Live interface on a night wide-angle dash cam: the zoom search finds the small, dark face; front view monitoring with risk 0 and the driver-state cards.", wide=True, width="66%")}
+{fig(ui("ui_trip_report.jpg"), "Fig. 6. Trip report without video: safety score, KPIs, time per risk level, alerts and the driver's sleepiness rating.", width="82%")}
 <h2>VII. Discussion and Limitations</h2>
 {t5}
 <p>Learned per-frame drowsiness models trained on few people transfer poorly to new drivers and cameras; treating them as supporting evidence
@@ -732,5 +734,8 @@ creators of the public datasets and open-source software used in this work.</p>
 
 
 if __name__ == "__main__":
-    build_report()
+    import sys
+
+    if "--paper" not in sys.argv:
+        build_report()
     build_paper()
