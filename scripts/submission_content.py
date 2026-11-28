@@ -135,4 +135,6 @@ REFERENCES = [
     "T. Akerstedt and M. Gillberg, \"Subjective and objective sleepiness in the active individual,\" Int. J. Neuroscience, 1990 (KSS).",
     "K. J. Piczak, \"ESC: Dataset for environmental sound classification,\" in Proc. ACM Multimedia, 2015.",
     "World Health Organization, \"Global status report on road safety 2023,\" Geneva, 2023.",
+    "G. Ersoy, M. A. Tatar, E. Tonbul and S. Kirbiz, \"Improving driver drowsiness detection via personalized EAR/MAR thresholds and CNN-based classification,\" arXiv:2604.22479, 2026.",
+    "S. Bianco, L. Celona and P. Napoletano, \"Cross-camera distracted driver classification through feature disentanglement and contrastive learning,\" arXiv:2411.13181, 2024.",
 ]

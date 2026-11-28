@@ -146,7 +146,8 @@ def body() -> str:
     s += [H1("2", "Related Work"), H2("2.1", "Eye-Based Drowsiness Measures"),
           P("Soukupov&aacute; and &Ccaron;ech introduced the Eye Aspect Ratio (EAR), the ratio of vertical to horizontal eye-landmark "
             "distances, which falls towards zero as the eye closes [1]. PERCLOS, the percentage of time the eyes are at least 80% closed, is "
-            "the most validated drowsiness measure [2]. Both depend on the individual's eye shape, which motivates per-driver calibration."),
+            "the most validated drowsiness measure [2]. Fixed EAR thresholds vary with the individual's eye shape, and PERCLOS inherits this "
+            "through the closed-eye decision; recent work personalises EAR/MAR thresholds [23], which motivates per-driver calibration."),
           H2("2.2", "Facial Landmarks and Head Pose"),
           P("MediaPipe regresses 468-478 three-dimensional face landmarks from a single RGB camera in real time [5], together with blendshape "
             "coefficients (eye blink, jaw open) and a facial transformation matrix that gives yaw, pitch and roll. Its detector is designed "
@@ -163,8 +164,8 @@ def body() -> str:
           H2("2.5", "Evaluation Practice and Research Gap"),
           P("Driver datasets often contain few people and many near-identical frames per person, so random image splits place the same person "
             "in training and test sets. Commercial systems use infrared cameras in fixed positions. Work on consumer cameras at arbitrary "
-            "positions, on limiting false alarms, and on learning from real drivers without collecting video is limited; this project "
-            "addresses these gaps."),
+            "positions (cross-camera degradation of distraction classifiers has been reported [24]), on limiting false alarms, and on learning "
+            "from real drivers without collecting video is limited; this project addresses these gaps."),
           TAB("Comparison of related approaches", ["Approach", "Strength", "Limitation", "This project"],
               [["Geometric thresholds (EAR/MAR)", "Light, explainable", "Fixed thresholds, pose-sensitive", "Per-driver calibration, pose gating"],
                ["Single-frame CNN", "Accurate per image", "Identity leakage, no time context", "Subject-independent tests, temporal model"],
@@ -642,13 +643,15 @@ real-time DMS for ordinary cameras that runs offline on a laptop CPU and address
 <p>Section II reviews related work, Section III the architecture, Section IV the method, Section V the experimental setup and Section VI the
 results; Sections VII and VIII discuss limitations and conclude.</p>
 <h2>II. Related Work</h2>
-<p><i>Geometric measures.</i> The Eye Aspect Ratio (EAR) [1] and PERCLOS [2] are the classic drowsiness measures; both depend on the individual's
-eye shape. MediaPipe [5] provides real-time 3-D face landmarks and blendshapes from a monocular camera.</p>
+<p><i>Geometric measures.</i> The Eye Aspect Ratio (EAR) [1] and PERCLOS [2] are the classic drowsiness measures. Fixed EAR thresholds vary with
+the individual's eye shape, and PERCLOS inherits this through the closed-eye decision; recent work therefore personalises EAR/MAR thresholds
+[23]. MediaPipe [5] provides real-time 3-D face landmarks and blendshapes from a monocular camera.</p>
 <p><i>Learned models.</i> CNNs such as MobileNetV3 [6] and EfficientNet [7] classify eye state, expression and behaviour; multi-task learning
 with uncertainty weighting [9] shares a backbone between tasks; temperature scaling [10] calibrates confidences. For temporal drowsiness,
 UTA-RLDD [3] offers 60 people with realistic self-labelled videos and a baseline of about 65% for three levels; NTHU-DDD [4] is widely used
 but contains few people. YOLO [12] detects objects and body keypoints; YAMNet [13] classifies audio events.</p>
-<p><i>Gap.</i> Few works evaluate strictly on unseen drivers, address arbitrary camera placement, or learn from real drivers without collecting video.</p>
+<p><i>Gap.</i> Cross-camera degradation of distraction classifiers has been studied [24], but few works combine strict unseen-driver
+evaluation, robustness to arbitrary and changing camera placement, and learning from real drivers without collecting video.</p>
 <h2>III. System Architecture</h2>
 {fig(A / "architecture.png", "Fig. 1. Architecture of the system: in-car edge application (offline-first, left to right: input, perception, driver state, decision and action) and the cloud back end with the retraining pipeline (bottom).", wide=True, width="96%")}
 <p>Frames from a webcam, phone, dash camera (RTSP) or video file are processed by MediaPipe on every frame. The heavier networks (eye-state
