@@ -159,12 +159,13 @@ cards(s, [("1 · Calibrate", "first seconds learn YOUR open eye and neutral head
 
 # 10 demo screenshots
 s = slide("Live system", "Working demonstration")
-pic(s, A / "live_monitor.png", Inches(0.5), Inches(1.55), Inches(6.1), Inches(5.3))
-pic(s, A / "live_alerts.png", Inches(6.8), Inches(1.55), Inches(6.1), Inches(5.3))
+pic(s, A / "crop_ui_night_monitoring.png", Inches(0.5), Inches(1.55), Inches(6.1), Inches(5.3))
+pic(s, A / "crop_ui_camera_moved.png", Inches(6.8), Inches(1.55), Inches(6.1), Inches(5.3))
+text(s, Inches(0.6), Inches(6.45), Inches(12.2), Inches(0.5), "Night wide-angle dash cam: driver found by the zoom search (left) · camera moved: position re-learned automatically (right)", 13, color=MUT)
 
 # 11 trip report
 s = slide("Trip report without any video", "Output")
-pic(s, A / "trip_report.png", Inches(0.5), Inches(1.5), Inches(7.6), Inches(5.4))
+pic(s, A / "crop_ui_trip_report.png", Inches(0.5), Inches(1.5), Inches(7.6), Inches(5.4))
 text(s, Inches(8.4), Inches(1.8), Inches(4.5), Inches(5), ["Safety score, peak risk, PERCLOS, longest eye closure and look-away",
      "Time in each risk level and alerts by type", "Driver's sleepiness rating (Karolinska scale)",
      "Download as JSON / CSV / PDF: a few KB, no footage, syncs on weak networks"], 16, color=MUT)

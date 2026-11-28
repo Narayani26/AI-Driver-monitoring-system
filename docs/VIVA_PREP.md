@@ -111,8 +111,20 @@ If something misfires, say so plainly: "this is why drivers can tap 'Not true', 
 5. Privacy-preserving learning from driver feedback with a safe promotion rule.
 6. Multi-modal accident check.
 
-## 5. Demo videos (free)
-- **Your own recordings are the best demo**, because they're legal and realistic: normal driving posture, closing the eyes, yawning, phone, look-away, head drop. Record 20-40 s each with QuickTime and play them with **Video file**.
-- Free stock sites: Pexels and Pixabay (free licence) and Coverr (royalty-free). Search for "tired driver", "driver sleeping", "driver yawning", "driver phone", "driving at night car interior", or the [Coverr fall-asleep page](https://coverr.co/stock-video-footage/fall-asleep) and [Coverr yawning page](https://coverr.co/stock-video-footage/yawning).
-- Research datasets with real driver videos: UTA-RLDD (already used), the [DMD dataset](https://dmd.vicomtech.org/) (free for academic use after a form; drowsiness, phone, drinking, yawning) and [YawDD on IEEE DataPort](https://ieee-dataport.org/taxonomy/term/3469) (yawning).
-- **Crash:** no free licensed in-car crash video exists for this. Demonstrate it live: play a car-crash sound (Pixabay sound effects, "car crash") and tap or shake the laptop, then don't respond, which starts the countdown; press "I'm OK" to cancel. Enable it with `--mishap --audio`.
+## 5. Demo videos (free, exact links)
+| Scenario | Link | Notes |
+|---|---|---|
+| Tired driver at night | https://www.pexels.com/video/a-tired-man-driving-a-car-9531464/ | Pexels licence: free, no attribution needed |
+| Normal driving at night | https://www.pexels.com/video/man-driving-a-car-at-night-3554563/ | baseline "everything OK" |
+| Normal driving (day) | https://www.pexels.com/video/a-person-driving-a-car-13802607/ | baseline |
+| Passenger in view | https://www.pexels.com/video/woman-looking-at-the-man-while-driving-8102522/ | shows that the driver is tracked, not the passenger |
+| Phone while driving (search) | https://www.pexels.com/search/videos/texting%20while%20driving/ | pick a clip where the face is visible |
+| Phone (more) | https://pixabay.com/videos/search/texting%20and%20driving/ and https://mixkit.co/free-stock-video/using-phone/ | free licences |
+| Sleeping in car / tired | https://pixabay.com/videos/search/sleeping%20in%20car/ and https://pixabay.com/videos/search/tired/ | pick a clip with a visible face |
+| Yawning | https://pixabay.com/videos/search/yawning/ and https://pixabay.com/videos/search/yawn/ | mostly not in a car; fine to show yawn counting |
+| Night driving (dash cam style) | https://pixabay.com/videos/search/nighttime%20driving/ | |
+| Research data (real drivers) | https://dmd.vicomtech.org/ (form; academic use) and https://ieee-dataport.org/taxonomy/term/3469 (yawning) | not instant |
+
+On Pexels or Pixabay: open the clip, click **Free download**, choose **HD 1280x720** (smaller and faster), then load it in the app with **Video file**.
+
+**Crash:** no free in-car crash video exists. Demonstrate it live: play a "car crash" sound effect (https://pixabay.com/sound-effects/search/car%20crash/), tap or shake the laptop, and don't respond, so the SOS countdown starts; press "I'm OK" to cancel. Start the app with `--audio --mishap`.
